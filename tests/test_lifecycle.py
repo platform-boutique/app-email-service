@@ -223,3 +223,42 @@ def test_starts_with_telemetry_unset_logs_json_and_exits_0_on_sigterm(app_dir):
     assert any('quote"d@example.com' in m for m in messages)
     assert "Received SIGTERM, shutting down" in messages
     assert messages[-1] == "EmailService stopped"
+
+
+def test_exits_0_on_sigterm_with_otlp_and_pyroscope_pointed_at_a_collector_that_never_answers(app_dir):
+    """Chart defaults set both OTEL_EXPORTER_OTLP_ENDPOINT and PYROSCOPE_ADDR; behind a dropping NetworkPolicy the
+    collector accepts nothing useful. The process used to hang in interpreter finalization until SIGKILL (exit 137)."""
+    import grpc
+
+    with socket.socket() as blackhole:  # accepts connections (backlog), never reads or answers
+        blackhole.bind(("127.0.0.1", 0))
+        blackhole.listen(32)
+        address = f"http://127.0.0.1:{blackhole.getsockname()[1]}"
+        port = _free_port()
+        proc = subprocess.Popen(
+            [sys.executable, "src/server.py"],
+            cwd=app_dir,
+            env=_clean_env(
+                PORT=str(port),
+                PYTHONUNBUFFERED="1",
+                OTEL_EXPORTER_OTLP_ENDPOINT=address,
+                PYROSCOPE_ADDR=address,
+            ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+                grpc.channel_ready_future(channel).result(timeout=15)
+            time.sleep(3)  # let the exporters connect and start waiting for answers
+            proc.send_signal(signal.SIGTERM)
+            started = time.monotonic()
+            proc.communicate(timeout=10)
+            elapsed = time.monotonic() - started
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+    assert proc.returncode == 0
+    assert elapsed < 5

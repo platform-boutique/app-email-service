@@ -132,4 +132,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # Everything is flushed and stopped by now. Leave without interpreter finalization: with the OTLP exporter and
+    # the Pyroscope profiler both pointed at a collector that does not answer, finalization blocks until SIGKILL.
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
