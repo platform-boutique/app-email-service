@@ -1,0 +1,19 @@
+# Build context = only what the Dockerfile copies (requirements*, proto/, src/, templates/).
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+tests
+docs
+*.md
+mkdocs.yml
+catalog-info.yaml
+.pre-commit-config.yaml
+.trivyignore
+# Stubs compiled locally for running from source; the image compiles its own in the builder stage and
+# `COPY src/` would otherwise overwrite them.
+src/generated/*_pb2*.py
