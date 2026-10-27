@@ -23,7 +23,7 @@ livenessProbe:
   failureThreshold: 3
 ```
 
-**Graceful shutdown:** the process runs as PID 1 and installs no `SIGTERM` handler. The kernel ignores unhandled signals for PID 1, so `SIGTERM` is dropped and every pod termination waits the full grace period before `SIGKILL`. Set `terminationGracePeriodSeconds: 5` (the service has no in-flight work worth waiting for). A proper fix is a `signal.signal(SIGTERM, …)` handler or a tiny init (`tini`) in the image.
+**Graceful shutdown:** `SIGTERM` (and `SIGINT`) is handled even as PID 1: the server stops accepting new RPCs, gives in-flight ones up to 2 s (`server.stop(2)`), flushes telemetry when it is on (bounded at 2 s, also when the collector is unreachable) and exits `0`. The worst case (4 s) fits the chart's `terminationGracePeriodSeconds: 5`. Measured: `docker stop` on the idle container returned in 0.36 s with exit code 0; running from source against a stub OTLP receiver, the final traces, metrics and logs batches arrived after `SIGTERM` and the process exited 0; with nothing listening on the endpoint it exited 0 after the 2 s flush bound (a test covers this).
 
 **Security context**
 

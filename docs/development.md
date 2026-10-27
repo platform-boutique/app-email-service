@@ -14,8 +14,10 @@ mkdir -p src/generated && python -m grpc_tools.protoc -I proto \
 touch src/generated/__init__.py
 sed -i 's/^import email_pb2 as email__pb2/from . import email_pb2 as email__pb2/' src/generated/email_pb2_grpc.py
 
-python src/server.py          # run
+python src/server.py          # run (telemetry and profiling off unless their variables are set)
 pytest                        # tests (pytest.ini sets pythonpath=src)
+# tests/test_lifecycle.py compiles the proto into a temp dir itself (needs grpcio-tools from requirements.txt), starts
+# the real server with every telemetry variable unset, checks the JSON log lines and that SIGTERM exits 0
 
 docker build -t email-service .
 docker run --rm -p 8080:8080 email-service
@@ -44,14 +46,14 @@ grpcurl -plaintext -proto proto/health.proto localhost:8080 grpc.health.v1.Healt
 
 ```
 ├── src/
-│   ├── server.py        # gRPC server (10-thread pool), EmailService + Health servicers, Jinja2 rendering
-│   ├── telemetry.py     # OTel traces/metrics, Prometheus server, Pyroscope; must be imported first
+│   ├── server.py        # gRPC server (10-thread pool), EmailService + Health servicers, Jinja2 rendering, JSON logs, SIGTERM
+│   ├── telemetry.py     # telemetry contract, OTel traces/metrics/logs, Pyroscope, bounded shutdown; imported first
 │   ├── generated/       # protoc output (git: only __init__.py; real stubs are built in Docker)
 │   └── __init__.py
 ├── templates/confirmation.html     # Jinja2 order-confirmation template
 ├── proto/               # email.proto, health.proto
 ├── requirements.in / requirements.txt / requirements-dev.txt
 ├── pyproject.toml / pytest.ini / .python-version / .trivyignore
-├── Dockerfile
+├── Dockerfile / .dockerignore
 └── docs/                # empty placeholder
 ```
