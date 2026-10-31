@@ -39,6 +39,9 @@ kafka_logger = logging.getLogger("kafka")
 kafka_logger.addHandler(handler)
 kafka_logger.setLevel(logging.WARNING)
 kafka_logger.propagate = False
+# Connection churn while the broker is away (one ERROR/WARNING pair per reconnect attempt) is reported by the
+# consumer itself as "kafka connection lost" / "restored" at info level.
+logging.getLogger("kafka.net").setLevel(logging.CRITICAL)
 
 # Imported after the logger exists: these modules log through it.
 from consumer import OrdersPlacedConsumer  # noqa: E402
