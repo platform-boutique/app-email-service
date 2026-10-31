@@ -88,8 +88,7 @@ def _money(value, what: str) -> SimpleNamespace:
 def order_view_from_event(event: dict) -> SimpleNamespace:
     """Adapt an order.placed event (already a dict) to what the template expects. Unknown fields are ignored.
 
-    Raises EventError on wrong types. The template's `street_address_1/2` do not exist on either shape, they render
-    empty exactly as they do on the gRPC path.
+    Raises EventError on wrong types. The shape is OrderResult plus `name` per item and an optional `total`.
     """
     addr = _obj(event.get("shipping_address"), "shipping_address")
     items = event.get("items")
@@ -104,12 +103,13 @@ def order_view_from_event(event: dict) -> SimpleNamespace:
             raise EventError("item must be an object")
         view_items.append(
             SimpleNamespace(
-                name=_text(it.get("name")),
+                # the product id is not customer-facing text; the template falls back to it only on the gRPC path
+                name=_text(it.get("name")) or "Item",
                 item=SimpleNamespace(product_id=_text(it.get("product_id")), quantity=_number(it.get("quantity"))),
                 cost=_money(it.get("unit_price"), "unit_price"),
             )
         )
-    return SimpleNamespace(
+    view = SimpleNamespace(
         order_id=_text(event.get("order_id")),
         shipping_tracking_id=_text(event.get("shipping_tracking_id")),
         shipping_cost=_money(event.get("shipping_cost"), "shipping_cost"),
@@ -121,5 +121,8 @@ def order_view_from_event(event: dict) -> SimpleNamespace:
             zip_code=_number(addr.get("zip_code")),
         ),
         items=view_items,
-        total=_money(event.get("total"), "total"),
     )
+    # An event without a total (the contract always sends one) gets it computed by the template, like the gRPC path.
+    if _obj(event.get("total"), "total"):
+        view.total = _money(event.get("total"), "total")
+    return view

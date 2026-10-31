@@ -66,8 +66,9 @@ grpcurl -plaintext -proto proto/mailbox.proto -d '{"email_id": "<id from the lis
 │   ├── telemetry.py     # telemetry contract, OTel traces/metrics/logs, Pyroscope, bounded shutdown; imported first
 │   ├── generated/       # protoc output (git: only __init__.py; real stubs are built in Docker)
 │   └── __init__.py
-├── templates/confirmation.html     # Jinja2 order-confirmation template (unchanged)
+├── templates/confirmation.html     # Jinja2 order-confirmation template (inline styles only)
 ├── templates/confirmation.txt      # plain-text twin, stored with the mail
+├── templates/_macros.jinja         # money / address / total macros shared by both
 ├── proto/               # email.proto, mailbox.proto, health.proto
 ├── requirements.in / requirements.txt / requirements-dev.txt
 ├── pyproject.toml / pytest.ini / .python-version / .trivyignore

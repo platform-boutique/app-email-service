@@ -1,14 +1,17 @@
+{%- import "_macros.jinja" as m -%}
 Your Order Confirmation
 
 Thanks for shopping with us!
 
 Order ID: #{{ order.order_id }}
-Shipping tracking ID: #{{ order.shipping_tracking_id }}
-Shipping cost: {{ order.shipping_cost.units }}.{{ "%02d" | format(order.shipping_cost.nanos // 10000000) }} {{ order.shipping_cost.currency_code }}
-Ship to: {{ order.shipping_address.street_address }}, {{ order.shipping_address.city }}, {{ order.shipping_address.state }}, {{ order.shipping_address.country }} {{ order.shipping_address.zip_code }}
+Tracking ID: #{{ order.shipping_tracking_id }}
+
+Shipping address:
+{{ m.address(order.shipping_address) }}
 
 Items:
 {% for item in order.items -%}
-- {{ item.name or item.item.product_id }} (#{{ item.item.product_id }}) x {{ item.item.quantity }}: {{ item.cost.units }}.{{ "%02d" | format(item.cost.nanos // 10000000) }} {{ item.cost.currency_code }}
+- {{ m.item_label(item) }}: {{ item.item.quantity }} x {{ m.money(item.cost) }} = {{ m.line_total(item.cost, item.item.quantity) }}
 {% endfor %}
-Total: {{ order.total.units }}.{{ "%02d" | format(order.total.nanos // 10000000) }} {{ order.total.currency_code }}
+Shipping: {{ m.money(order.shipping_cost) }}
+Total: {{ m.order_total(order) }}

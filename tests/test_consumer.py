@@ -79,7 +79,10 @@ class TestHandle:
         mail = store.list_for_orders(["ORD-123"])[0]
         assert mail.to_addr == "customer@example.com" and "ORD-123" in mail.subject
         full = store.get(mail.id, "ORD-123")
-        assert "<!DOCTYPE html>" in full.html_body and "PROD-001" in full.html_body and "Linen shirt" in full.text_body
+        assert (
+            "<!DOCTYPE html>" in full.html_body and "Linen shirt" in full.html_body and "Linen shirt" in full.text_body
+        )
+        assert "PROD-001" not in full.html_body and "PROD-001" not in full.text_body  # ids are not customer text
         log = "\n".join(r.getMessage() for r in caplog.records)
         assert "order confirmation email" in log and "order=ORD-123" in log and "orders.placed[1]@42" in log
         assert "customer@example.com" not in log and "123 Main St" not in log  # never the payload

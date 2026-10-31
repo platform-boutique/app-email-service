@@ -31,7 +31,11 @@ Package `hipstershop`, service `EmailService` ([`proto/email.proto`](proto/email
 |---|---|---|---|
 | `SendOrderConfirmation` | `{ string email, OrderResult order }` | `Empty` | Renders `templates/confirmation.html` with the order (autoescaped); on success logs "A request to send order confirmation email to <email> has been received."; on template or unexpected error sets gRPC `INTERNAL` |
 
-The rendered HTML is discarded. The template references `street_address_1` / `street_address_2`, which do not exist in the `Address` message, so those render as empty strings. This path does **not** write to the mailbox.
+The rendered HTML is discarded. The template used to read `street_address_1` / `street_address_2` (not in the `Address` message) and printed money as `8. 99 USD`; it now reads `street_address` and `state` and shows **`$8.99`** for USD and `5.25 EUR` (amount, then code) for other currencies: always 2 decimals, nanos rounded half up, thousands separated. This path has only product ids and no total, so the item column falls back to the id and the total is items + shipping. This path does **not** write to the mailbox.
+
+### The confirmation mail (HTML and plain text)
+
+Both bodies come from `templates/confirmation.html` / `confirmation.txt` (shared macros in `templates/_macros.jinja`) and show: order id and tracking id once, the shipping address without empty parts (`street, city, state, country zip`), an items table (**name**, quantity, unit price, line total; the product id is never shown for an event), a Shipping row and a Total row (`event.total`; computed for the gRPC path). The HTML uses inline styles only, no `<style>`, `<link>`, script or external resource (it is shown in a sandboxed iframe); every value is HTML-escaped exactly once (a test renders a `<script>` product name inert).
 
 ### MailboxService (same port)
 
@@ -243,8 +247,9 @@ grpcurl -plaintext -proto proto/mailbox.proto -d '{"email_id": "<id from the lis
 │   ├── telemetry.py     # telemetry contract, OTel traces/metrics/logs, Pyroscope, bounded shutdown; imported first
 │   ├── generated/       # protoc output (git: only __init__.py; real stubs are built in Docker)
 │   └── __init__.py
-├── templates/confirmation.html     # Jinja2 order-confirmation template (unchanged)
+├── templates/confirmation.html     # Jinja2 order-confirmation template (inline styles only)
 ├── templates/confirmation.txt      # plain-text twin, stored with the mail
+├── templates/_macros.jinja         # money / address / total macros shared by both
 ├── proto/               # email.proto, mailbox.proto, health.proto
 ├── requirements.in / requirements.txt / requirements-dev.txt
 ├── pyproject.toml / pytest.ini / .python-version / .trivyignore
@@ -259,9 +264,9 @@ Run on this branch (2026-10-31, Python 3.12.3 venv with the pinned `requirements
 | What | Result |
 |---|---|
 | `ruff check .` and `ruff format --check .` | clean |
-| `pytest` (no generated stubs in `src/generated`, as in CI) | 128 passed, 6 skipped (the Kafka integration tests); the 57 pre-existing tests are unchanged, only the stub compilation in the `app_dir` fixture of `tests/test_lifecycle.py` now includes `mailbox.proto` |
+| `pytest` (no generated stubs in `src/generated`, as in CI) | 146 passed, 6 skipped (the Kafka integration tests); the pre-existing tests are unchanged except the two column-header asserts in `tests/test_template.py` ("Item No." is now "Item") and the stub compilation in the `app_dir` fixture of `tests/test_lifecycle.py`, which now includes `mailbox.proto` |
 | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` against a throwaway `apache/kafka:4.3.2` | 6 passed: broker started **after** the consumer (it waits, then catches up), event to one mail listed/fetched through the real gRPC servicer, the same event twice = one mail, restart resumes after the committed offset (the second consumer processed exactly the one new record), a new group reads from the earliest offset, malformed + `schema_version` 2 records skipped and the good one behind them stored |
-| `docker build -t email-service:local .` and a container smoke test on a private docker network with a throwaway Kafka and a named volume | image 184 MB; service started before the broker was up, recovered, consumed an event (1 mail), a duplicate was ignored; `ListOrderEmails` / `GetOrderEmail` via `grpcurl -proto` returned the mail (with bodies only in `GetOrderEmail`), wrong `order_id` = `NOT_FOUND`, old `SendOrderConfirmation` still `{}`, health `SERVING` also with the broker stopped; the mailbox survived a container restart and the restart did not re-read old offsets; `docker stop` exit code 0 (about 0.6 s with Kafka up, consumer stopped within 20 ms of `SIGTERM` with Kafka down); the service restarted while the broker was gone, and a broker created afterwards was picked up (second event stored, about 40 s after the produce) |
+| `docker build -t email-service:local .` and a container smoke test (run before the template rewrite of 2026-10-31 evening; the image was not rebuilt after it) on a private docker network with a throwaway Kafka and a named volume | image 184 MB; service started before the broker was up, recovered, consumed an event (1 mail), a duplicate was ignored; `ListOrderEmails` / `GetOrderEmail` via `grpcurl -proto` returned the mail (with bodies only in `GetOrderEmail`), wrong `order_id` = `NOT_FOUND`, old `SendOrderConfirmation` still `{}`, health `SERVING` also with the broker stopped; the mailbox survived a container restart and the restart did not re-read old offsets; `docker stop` exit code 0 (about 0.6 s with Kafka up, consumer stopped within 20 ms of `SIGTERM` with Kafka down); the service restarted while the broker was gone, and a broker created afterwards was picked up (second event stored, about 40 s after the produce) |
 
 Not run:
 
@@ -275,7 +280,7 @@ Not run:
 ## Known limitations
 
 - Does not send email; the mailbox is the only place a "sent" mail exists.
-- Template placeholders `street_address_1/2` don't exist in the proto (the event's single `street_address` is therefore not shown in the HTML either; the plain-text body shows it).
+- The template has no logo or web font (no external resources: the mail is shown in a sandboxed iframe); the legacy gRPC path renders ids and a computed total because that request carries no names or total.
 - The gRPC path logs the recipient address (as before); the consumer path never logs email or address.
 - The mailbox is one SQLite file per replica: **run one replica** with Kafka on (see Kubernetes). No retention or pruning: it grows with every order.
 - The mailbox stores recipients and bodies in clear text; access control is the caller's job (`ListOrderEmails` trusts the order ids it is given).

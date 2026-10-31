@@ -6,7 +6,11 @@ Package `hipstershop`, service `EmailService` ([`proto/email.proto`](https://git
 |---|---|---|---|
 | `SendOrderConfirmation` | `{ string email, OrderResult order }` | `Empty` | Renders `templates/confirmation.html` with the order (autoescaped); on success logs "A request to send order confirmation email to <email> has been received."; on template or unexpected error sets gRPC `INTERNAL` |
 
-The rendered HTML is discarded. The template references `street_address_1` / `street_address_2`, which do not exist in the `Address` message, so those render as empty strings. This path does **not** write to the mailbox.
+The rendered HTML is discarded. The template used to read `street_address_1` / `street_address_2` (not in the `Address` message) and printed money as `8. 99 USD`; it now reads `street_address` and `state` and shows **`$8.99`** for USD and `5.25 EUR` (amount, then code) for other currencies: always 2 decimals, nanos rounded half up, thousands separated. This path has only product ids and no total, so the item column falls back to the id and the total is items + shipping. This path does **not** write to the mailbox.
+
+### The confirmation mail (HTML and plain text)
+
+Both bodies come from `templates/confirmation.html` / `confirmation.txt` (shared macros in `templates/_macros.jinja`) and show: order id and tracking id once, the shipping address without empty parts (`street, city, state, country zip`), an items table (**name**, quantity, unit price, line total; the product id is never shown for an event), a Shipping row and a Total row (`event.total`; computed for the gRPC path). The HTML uses inline styles only, no `<style>`, `<link>`, script or external resource (it is shown in a sandboxed iframe); every value is HTML-escaped exactly once (a test renders a `<script>` product name inert).
 
 ### MailboxService (same port)
 

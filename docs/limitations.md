@@ -1,7 +1,7 @@
 # Known limitations
 
 - Does not send email; the mailbox is the only place a "sent" mail exists.
-- Template placeholders `street_address_1/2` don't exist in the proto (the event's single `street_address` is therefore not shown in the HTML either; the plain-text body shows it).
+- The template has no logo or web font (no external resources: the mail is shown in a sandboxed iframe); the legacy gRPC path renders ids and a computed total because that request carries no names or total.
 - The gRPC path logs the recipient address (as before); the consumer path never logs email or address.
 - The mailbox is one SQLite file per replica: **run one replica** with Kafka on (see Kubernetes). No retention or pruning: it grows with every order.
 - The mailbox stores recipients and bodies in clear text; access control is the caller's job (`ListOrderEmails` trusts the order ids it is given).
