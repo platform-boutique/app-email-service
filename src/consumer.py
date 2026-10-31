@@ -217,14 +217,6 @@ class OrdersPlacedConsumer:
                     break
         return None
 
-    @staticmethod
-    def _is_connected(consumer) -> bool:
-        check = getattr(consumer, "bootstrap_connected", None)
-        try:
-            return bool(check()) if check else True
-        except Exception:
-            return False
-
     def _commit(self, consumer, pos: Position, record) -> bool:
         """Commit pos+1 after the message was handled. True when committed (or it can only be redelivered)."""
         from kafka.errors import CommitFailedError
@@ -270,7 +262,6 @@ class OrdersPlacedConsumer:
         if consumer is None:
             return
         topic_warned = False
-        connected = True
         try:
             while not self.stop_event.is_set():
                 try:
@@ -280,14 +271,7 @@ class OrdersPlacedConsumer:
                     if self._wait(1.0):
                         break
                     continue
-                if not batches:
-                    now_connected = self._is_connected(consumer)
-                    if now_connected != connected:
-                        connected = now_connected
-                        logger.info(
-                            "kafka connection restored" if connected else "kafka connection lost, waiting for it"
-                        )
-                if not batches and connected and not topic_warned:
+                if not batches and not topic_warned:
                     try:
                         if consumer.partitions_for_topic(self.topic) is None:
                             logger.info(f"topic {self.topic} does not exist yet, waiting for it")

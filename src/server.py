@@ -41,8 +41,8 @@ from rendering import render_html  # noqa: E402
 
 # The Kafka client's own messages (connection problems, rebalances) go through the same JSON format; it never logs
 # record payloads. Without this they would end up on stderr in a different format. Repeats are rate limited (a
-# missing topic or broker makes the client repeat the same lines several times a second), and the connection churn
-# of the network layer is left to the consumer, which reports "kafka connection lost" / "restored" at info level.
+# missing topic or broker makes the client repeat the same lines several times a second). The network layer's
+# reconnect noise (kafka.net, one ERROR/WARNING group per attempt, with a changing backoff in the text) is off.
 kafka_handler = logging.StreamHandler(sys.stdout)
 kafka_handler.setFormatter(handler.formatter)
 kafka_handler.addFilter(RepeatFilter())
