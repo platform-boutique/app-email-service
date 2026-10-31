@@ -166,11 +166,13 @@ def app_dir(tmp_path_factory):
             f"--python_out={gen}",
             f"--grpc_python_out={gen}",
             str(ROOT / "proto" / "email.proto"),
+            str(ROOT / "proto" / "mailbox.proto"),
         ],
         check=True,
     )
-    stub = gen / "email_pb2_grpc.py"
-    stub.write_text(stub.read_text().replace("import email_pb2 as email__pb2", "from . import email_pb2 as email__pb2"))
+    for name in ("email", "mailbox"):  # the same import fix the Dockerfile applies with sed
+        stub = gen / f"{name}_pb2_grpc.py"
+        stub.write_text(stub.read_text().replace(f"import {name}_pb2 as", f"from . import {name}_pb2 as"))
     return app
 
 

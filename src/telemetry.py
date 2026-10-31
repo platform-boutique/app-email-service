@@ -211,7 +211,7 @@ rpc_server_active_requests = meter.create_up_down_counter(
 )
 
 
-def start_rpc_metrics(method: str):
+def start_rpc_metrics(method: str, service: str = "hipstershop.EmailService"):
     """
     Call at the start of each gRPC handler.
     Returns a callable: end(grpc_status_code_name) to record metrics.
@@ -219,7 +219,7 @@ def start_rpc_metrics(method: str):
     start_time = time.monotonic()
     attrs = {
         "rpc_system": "grpc",
-        "rpc_service": "hipstershop.EmailService",
+        "rpc_service": service,
         "rpc_method": method,
     }
     rpc_server_active_requests.add(1, attrs)

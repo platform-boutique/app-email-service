@@ -19,9 +19,10 @@ RUN mkdir -p generated \
         -I proto \
         --python_out=generated \
         --grpc_python_out=generated \
-        proto/email.proto \
+        proto/email.proto proto/mailbox.proto \
     && touch generated/__init__.py \
-    && sed -i 's/^import email_pb2 as email__pb2/from . import email_pb2 as email__pb2/' generated/email_pb2_grpc.py
+    && sed -i 's/^import email_pb2 as email__pb2/from . import email_pb2 as email__pb2/' generated/email_pb2_grpc.py \
+    && sed -i 's/^import mailbox_pb2 as mailbox__pb2/from . import mailbox_pb2 as mailbox__pb2/' generated/mailbox_pb2_grpc.py
 
 # ---- Runtime stage ----
 FROM python:3.12-alpine AS runtime
@@ -30,7 +31,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 RUN apk add --no-cache libstdc++ \
-    && addgroup -S -g 101 appgroup && adduser -S -u 100 -G appgroup appuser
+    && addgroup -S -g 101 appgroup && adduser -S -u 100 -G appgroup appuser \
+    && mkdir /data && chown 100:101 /data
+
+# The mailbox (SQLite, WAL; MAILBOX_DB defaults to /data/mailbox.db). Mount a volume here; a named volume inherits the ownership above.
+VOLUME /data
 
 WORKDIR /app
 

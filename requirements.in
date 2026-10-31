@@ -9,3 +9,4 @@ opentelemetry-sdk==1.45.1
 opentelemetry-instrumentation-grpc==0.66b1
 opentelemetry-exporter-otlp-proto-grpc==1.45.1
 pyroscope-io==1.2.5
+kafka-python==3.0.11
