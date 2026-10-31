@@ -33,21 +33,24 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 logger.propagate = False
 
-# The Kafka client's own messages (connection problems, rebalances) go through the same JSON handler; it never logs
-# record payloads. Without this they would end up on stderr in a different format.
-kafka_logger = logging.getLogger("kafka")
-kafka_logger.addHandler(handler)
-kafka_logger.setLevel(logging.WARNING)
-kafka_logger.propagate = False
-# Connection churn while the broker is away (one ERROR/WARNING pair per reconnect attempt) is reported by the
-# consumer itself as "kafka connection lost" / "restored" at info level.
-logging.getLogger("kafka.net").setLevel(logging.CRITICAL)
-
 # Imported after the logger exists: these modules log through it.
-from consumer import OrdersPlacedConsumer  # noqa: E402
+from consumer import OrdersPlacedConsumer, RepeatFilter  # noqa: E402
 from mailbox_service import MailboxServicer  # noqa: E402
 from mailbox_store import MailboxStore  # noqa: E402
 from rendering import render_html  # noqa: E402
+
+# The Kafka client's own messages (connection problems, rebalances) go through the same JSON format; it never logs
+# record payloads. Without this they would end up on stderr in a different format. Repeats are rate limited (a
+# missing topic or broker makes the client repeat the same lines several times a second), and the connection churn
+# of the network layer is left to the consumer, which reports "kafka connection lost" / "restored" at info level.
+kafka_handler = logging.StreamHandler(sys.stdout)
+kafka_handler.setFormatter(handler.formatter)
+kafka_handler.addFilter(RepeatFilter())
+kafka_logger = logging.getLogger("kafka")
+kafka_logger.addHandler(kafka_handler)
+kafka_logger.setLevel(logging.WARNING)
+kafka_logger.propagate = False
+logging.getLogger("kafka.net").setLevel(logging.CRITICAL)
 
 # ---------------------------------------------------------------------------
 # gRPC service implementation

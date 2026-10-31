@@ -15,6 +15,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 
 from jinja2 import TemplateError
@@ -32,6 +33,27 @@ SUPPORTED_SCHEMA_VERSION = 1
 STORED = "stored"
 DUPLICATE = "duplicate"
 SKIPPED = "skipped"
+
+
+class RepeatFilter(logging.Filter):
+    """Let an identical message through at most once per `window` seconds.
+
+    The Kafka client repeats "Topic x not found in cluster metadata" and "Marking the coordinator dead" several
+    times a second for as long as the topic or the broker is missing (normal until the first order is placed)."""
+
+    def __init__(self, window: float = 60.0, clock=time.monotonic):
+        super().__init__()
+        self.window, self._clock, self._seen = window, clock, {}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        key, now = (record.name, record.getMessage()), self._clock()
+        last = self._seen.get(key)
+        if last is not None and now - last < self.window:
+            return False
+        if len(self._seen) > 1000:
+            self._seen = {k: t for k, t in self._seen.items() if now - t < self.window}
+        self._seen[key] = now
+        return True
 
 
 class TransientError(Exception):

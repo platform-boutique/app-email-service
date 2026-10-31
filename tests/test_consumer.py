@@ -332,3 +332,19 @@ def test_kafka_down_keeps_health_serving_and_sigterm_exits_0_quickly(app_dir, tm
     messages = [r["message"] for r in records]
     assert any("not reachable yet" in m for m in messages)
     assert messages[-1] == "EmailService stopped"
+
+
+def test_repeat_filter_lets_an_identical_message_through_once_per_window():
+    from consumer import RepeatFilter
+
+    now = [100.0]
+    flt = RepeatFilter(window=60, clock=lambda: now[0])
+
+    def rec(msg, name="kafka.cluster"):
+        return logging.LogRecord(name, logging.ERROR, "f.py", 1, msg, None, None)
+
+    assert flt.filter(rec("Topic x not found")) is True
+    assert flt.filter(rec("Topic x not found")) is False  # repeated within the window
+    assert flt.filter(rec("Topic y not found")) is True  # another message
+    now[0] += 61
+    assert flt.filter(rec("Topic x not found")) is True  # window over
