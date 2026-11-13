@@ -1,10 +1,15 @@
 """Telemetry bootstrap. Import this module first: when telemetry is on it patches grpc before the server is built.
 
-Contract (same as the Go services):
-- Traces, metrics and logs are exported over OTLP/gRPC only when OTEL_EXPORTER_OTLP_ENDPOINT (or the legacy
-  COLLECTOR_SERVICE_ADDR, host:port) is set and non-empty. OTEL_SDK_DISABLED=true (or the legacy ENABLE_TRACING=0)
-  forces it off. With telemetry off nothing is exported and the metric instruments below are OpenTelemetry API no-ops.
-- Profiling (Pyroscope) is on only when PYROSCOPE_ADDR is set and non-empty and ENABLE_PROFILING is not "0".
+Contract (same as the Go services, OBS-01/02/04):
+- Traces, metrics and logs are exported over OTLP/gRPC only when OTEL_EXPORTER_OTLP_ENDPOINT is a valid absolute
+  http(s) URL. An empty or malformed value means off (never a crash). OTEL_SDK_DISABLED=true (trimmed, any case)
+  forces everything off, profiling included. With telemetry off nothing is exported and the metric instruments below
+  are OpenTelemetry API no-ops. The exporters are asynchronous (batch processors with bounded queues), startup never
+  waits for the collector.
+- Profiling (Pyroscope) is on only when PYROSCOPE_ADDR is a valid absolute http(s) URL; ENABLE_PROFILING=0 forces it
+  off, ENABLE_PROFILING=1 alone starts nothing (there is no default address).
+- Resource attributes on every signal: service.name, service.version, service.namespace=everly,
+  deployment.environment, service.instance.id. Pyroscope tags: service_name, version, environment.
 """
 
 import atexit
@@ -15,6 +20,7 @@ import socket
 import threading
 import time
 from collections.abc import Mapping
+from urllib.parse import urlparse
 
 from opentelemetry import metrics
 
@@ -22,30 +28,77 @@ from opentelemetry import metrics
 # Configuration
 # ---------------------------------------------------------------------------
 
-_SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "email-service")
-_SERVICE_VERSION = os.environ.get("SERVICE_VERSION", "1.0.0")
+SERVICE_NAMESPACE = "everly"
+UNKNOWN = "unknown"
+
+
+def service_name(env: Mapping[str, str]) -> str:
+    return env.get("OTEL_SERVICE_NAME", "").strip() or "email-service"
+
+
+def service_version(env: Mapping[str, str]) -> str:
+    """SERVICE_VERSION, else "dev" (this service has no package version and no build info of its own)."""
+    return env.get("SERVICE_VERSION", "").strip() or "dev"
+
+
+def service_commit(env: Mapping[str, str]) -> str:
+    """SERVICE_COMMIT (set by the build/deploy), else "unknown"."""
+    return env.get("SERVICE_COMMIT", "").strip() or UNKNOWN
+
+
+def deployment_environment(env: Mapping[str, str]) -> str:
+    return env.get("DEPLOYMENT_ENVIRONMENT", "").strip() or "local"
+
+
+def instance_id(env: Mapping[str, str]) -> str:
+    # Distinguishes replicas: in Kubernetes the hostname is the pod name.
+    return env.get("HOSTNAME", "").strip() or socket.gethostname()
+
+
+def resource_attributes(env: Mapping[str, str]) -> dict[str, str]:
+    """The resource attributes of every signal (OBS-02)."""
+    return {
+        "service.name": service_name(env),
+        "service.version": service_version(env),
+        "service.namespace": SERVICE_NAMESPACE,
+        "deployment.environment": deployment_environment(env),
+        "service.instance.id": instance_id(env),
+    }
+
+
+def _valid_http_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        _ = parsed.port  # raises ValueError for a port that is not a number or out of range
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+def sdk_disabled(env: Mapping[str, str]) -> bool:
+    return env.get("OTEL_SDK_DISABLED", "").strip().lower() == "true"
 
 
 def otlp_endpoint(env: Mapping[str, str]) -> str | None:
     """OTLP/gRPC endpoint (scheme included) or None when telemetry is off."""
-    if env.get("OTEL_SDK_DISABLED", "").strip().lower() == "true" or env.get("ENABLE_TRACING", "").strip() == "0":
+    if sdk_disabled(env):
         return None
     endpoint = env.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
-    if endpoint:
-        return endpoint
-    legacy = env.get("COLLECTOR_SERVICE_ADDR", "").strip()
-    if legacy:
-        return f"http://{legacy}"
-    return None
+    return endpoint if _valid_http_url(endpoint) else None
 
 
 def pyroscope_address(env: Mapping[str, str]) -> str | None:
     """Pyroscope server address or None when profiling is off."""
     addr = env.get("PYROSCOPE_ADDR", "").strip()
-    if not addr or env.get("ENABLE_PROFILING", "").strip() == "0":
+    if sdk_disabled(env) or env.get("ENABLE_PROFILING", "").strip() == "0":
         return None
-    return addr
+    return addr if _valid_http_url(addr) else None
 
+
+_SERVICE_NAME = service_name(os.environ)
+_SERVICE_VERSION = service_version(os.environ)
+_SERVICE_COMMIT = service_commit(os.environ)
+_ENVIRONMENT = deployment_environment(os.environ)
 
 OTLP_ENDPOINT = otlp_endpoint(os.environ)
 PYROSCOPE_ADDR = pyroscope_address(os.environ)
@@ -69,21 +122,14 @@ def _setup_otel(endpoint: str) -> None:
     from opentelemetry.sdk.metrics._internal.aggregation import ExplicitBucketHistogramAggregation
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.metrics.view import View
-    from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
+    from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     insecure = endpoint.startswith("http://")
     export_interval_ms = int(os.environ.get("OTEL_METRIC_EXPORT_INTERVAL", "15000"))
 
-    resource = Resource.create(
-        {
-            SERVICE_NAME: _SERVICE_NAME,
-            SERVICE_VERSION: _SERVICE_VERSION,
-            # Distinguishes replicas: in Kubernetes the hostname is the pod name.
-            "service.instance.id": os.environ.get("HOSTNAME") or socket.gethostname(),
-        }
-    )
+    resource = Resource.create(resource_attributes(os.environ))
 
     # Traces (OTLP gRPC → Alloy → Tempo)
     tracer_provider = TracerProvider(resource=resource, shutdown_on_exit=False)
@@ -132,7 +178,7 @@ def _setup_pyroscope(address: str) -> None:
     pyroscope.configure(
         application_name=_SERVICE_NAME,
         server_address=address,
-        tags={"version": _SERVICE_VERSION},
+        tags={"service_name": _SERVICE_NAME, "version": _SERVICE_VERSION, "environment": _ENVIRONMENT},
     )
 
 

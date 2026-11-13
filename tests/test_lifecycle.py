@@ -37,6 +37,9 @@ _TELEMETRY_VARS = (
     "COLLECTOR_SERVICE_ADDR",
     "OTEL_SDK_DISABLED",
     "ENABLE_TRACING",
+    "LOG_LEVEL",
+    "SERVICE_VERSION",
+    "SERVICE_COMMIT",
     "PYROSCOPE_ADDR",
     "ENABLE_PROFILING",
 )
@@ -47,56 +50,87 @@ _TELEMETRY_VARS = (
 # ---------------------------------------------------------------------------
 
 
-class TestOtlpEndpoint:
-    def test_unset_is_off(self):
-        assert telemetry.otlp_endpoint({}) is None
+EP = "http://alloy:4317"
+OTLP_CASES = [
+    # (env, expected endpoint)
+    ({}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": ""}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "   "}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": EP}, EP),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": f" {EP} "}, EP),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com:4317"}, "https://otel.example.com:4317"),
+    # malformed: off, never a crash
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "alloy:4317"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "alloy"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "http://"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "ftp://alloy:4317"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "http://alloy:notaport"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "http://alloy:99999"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": "not a url"}, None),
+    # OTEL_SDK_DISABLED=true (trimmed, case-insensitive) forces off; anything else does not
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": EP, "OTEL_SDK_DISABLED": "true"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": EP, "OTEL_SDK_DISABLED": "TRUE"}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": EP, "OTEL_SDK_DISABLED": " True "}, None),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": EP, "OTEL_SDK_DISABLED": "false"}, EP),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": EP, "OTEL_SDK_DISABLED": ""}, EP),
+    # the legacy switches are gone: they neither turn telemetry on nor off
+    ({"COLLECTOR_SERVICE_ADDR": "alloy:4317"}, None),
+    ({"COLLECTOR_SERVICE_ADDR": "alloy:4317", "OTEL_EXPORTER_OTLP_ENDPOINT": EP}, EP),
+    ({"OTEL_EXPORTER_OTLP_ENDPOINT": EP, "ENABLE_TRACING": "0"}, EP),
+]
 
-    def test_empty_is_off(self):
-        assert telemetry.otlp_endpoint({"OTEL_EXPORTER_OTLP_ENDPOINT": "", "COLLECTOR_SERVICE_ADDR": " "}) is None
-
-    def test_endpoint_is_used(self):
-        assert telemetry.otlp_endpoint({"OTEL_EXPORTER_OTLP_ENDPOINT": "http://alloy:4317"}) == "http://alloy:4317"
-
-    def test_legacy_collector_addr(self):
-        assert telemetry.otlp_endpoint({"COLLECTOR_SERVICE_ADDR": "alloy:4317"}) == "http://alloy:4317"
-
-    def test_endpoint_wins_over_legacy(self):
-        env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://a:4317", "COLLECTOR_SERVICE_ADDR": "b:4317"}
-        assert telemetry.otlp_endpoint(env) == "http://a:4317"
-
-    @pytest.mark.parametrize("value", ["true", "TRUE", " True "])
-    def test_sdk_disabled_forces_off(self, value):
-        env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://alloy:4317", "OTEL_SDK_DISABLED": value}
-        assert telemetry.otlp_endpoint(env) is None
-
-    def test_sdk_disabled_false_keeps_on(self):
-        env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://alloy:4317", "OTEL_SDK_DISABLED": "false"}
-        assert telemetry.otlp_endpoint(env) == "http://alloy:4317"
-
-    def test_legacy_enable_tracing_0_forces_off(self):
-        env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://alloy:4317", "ENABLE_TRACING": "0"}
-        assert telemetry.otlp_endpoint(env) is None
+PY = "http://pyroscope:4040"
+PYROSCOPE_CASES = [
+    # (env, expected address)
+    ({}, None),
+    ({"PYROSCOPE_ADDR": ""}, None),
+    ({"PYROSCOPE_ADDR": PY}, PY),
+    ({"PYROSCOPE_ADDR": PY, "ENABLE_PROFILING": "1"}, PY),
+    ({"ENABLE_PROFILING": "1"}, None),  # no default address
+    ({"PYROSCOPE_ADDR": PY, "ENABLE_PROFILING": "0"}, None),
+    ({"PYROSCOPE_ADDR": "pyroscope:4040"}, None),  # malformed
+    ({"PYROSCOPE_ADDR": "http://"}, None),
+    ({"PYROSCOPE_ADDR": PY, "OTEL_SDK_DISABLED": "true"}, None),  # "forces everything off"
+    ({"PYROSCOPE_ADDR": PY, "OTEL_SDK_DISABLED": "false"}, PY),
+]
 
 
-class TestPyroscopeAddress:
-    def test_unset_is_off(self):
-        assert telemetry.pyroscope_address({}) is None
+@pytest.mark.parametrize(("env", "expected"), OTLP_CASES)
+def test_otlp_endpoint_matrix(env, expected):
+    assert telemetry.otlp_endpoint(env) == expected
 
-    def test_empty_is_off(self):
-        assert telemetry.pyroscope_address({"PYROSCOPE_ADDR": ""}) is None
 
-    def test_set_is_on(self):
-        assert telemetry.pyroscope_address({"PYROSCOPE_ADDR": "http://alloy:4040"}) == "http://alloy:4040"
+@pytest.mark.parametrize(("env", "expected"), PYROSCOPE_CASES)
+def test_pyroscope_address_matrix(env, expected):
+    assert telemetry.pyroscope_address(env) == expected
 
-    def test_set_is_on_with_enable_profiling_1(self):
-        env = {"PYROSCOPE_ADDR": "http://alloy:4040", "ENABLE_PROFILING": "1"}
-        assert telemetry.pyroscope_address(env) == "http://alloy:4040"
 
-    def test_enable_profiling_0_forces_off(self):
-        assert telemetry.pyroscope_address({"PYROSCOPE_ADDR": "http://alloy:4040", "ENABLE_PROFILING": "0"}) is None
+def test_resource_attributes_defaults():
+    attrs = telemetry.resource_attributes({"HOSTNAME": "pod-1"})
+    assert attrs == {
+        "service.name": "email-service",
+        "service.version": "dev",
+        "service.namespace": "everly",
+        "deployment.environment": "local",
+        "service.instance.id": "pod-1",
+    }
 
-    def test_enable_profiling_alone_is_off(self):
-        assert telemetry.pyroscope_address({"ENABLE_PROFILING": "1"}) is None
+
+def test_resource_attributes_from_env():
+    env = {
+        "OTEL_SERVICE_NAME": "x",
+        "SERVICE_VERSION": " 1.2.3 ",
+        "DEPLOYMENT_ENVIRONMENT": "dev",
+        "HOSTNAME": "pod-2",
+    }
+    attrs = telemetry.resource_attributes(env)
+    assert (attrs["service.name"], attrs["service.version"]) == ("x", "1.2.3")
+    assert (attrs["deployment.environment"], attrs["service.instance.id"]) == ("dev", "pod-2")
+
+
+def test_commit_default_and_env():
+    assert telemetry.service_commit({}) == "unknown"
+    assert telemetry.service_commit({"SERVICE_COMMIT": "abc1234"}) == "abc1234"
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +237,10 @@ def test_starts_with_telemetry_unset_logs_json_and_exits_0_on_sigterm(app_dir):
             grpc.channel_ready_future(channel).result(timeout=15)
             # A quote in the message used to produce an invalid JSON log line.
             email_pb2_grpc.EmailServiceStub(channel).SendOrderConfirmation(
-                email_pb2.SendOrderConfirmationRequest(email='quote"d@example.com'), timeout=5
+                email_pb2.SendOrderConfirmationRequest(
+                    email="jane.doe@example.com", order=email_pb2.OrderResult(order_id='ord"1')
+                ),
+                timeout=5,
             )
 
         proc.send_signal(signal.SIGTERM)
@@ -220,11 +257,56 @@ def test_starts_with_telemetry_unset_logs_json_and_exits_0_on_sigterm(app_dir):
     assert stderr == ""  # nothing noisy (no exporter retries) with telemetry off
     records = [json.loads(line) for line in stdout.splitlines()]  # every line is valid JSON
     messages = [r["message"] for r in records]
-    assert all(set(r) >= {"timestamp", "severity", "name", "message"} for r in records)
-    assert any("telemetry off, profiling off" in m for m in messages)
-    assert any('quote"d@example.com' in m for m in messages)
+    assert all(set(r) >= {"timestamp", "severity", "message", "service", "version"} for r in records)
+    assert all(r["timestamp"].endswith("Z") and "T" in r["timestamp"] for r in records)  # RFC3339 UTC
+    assert all(r["severity"] in ("debug", "info", "warning", "error") for r in records)
+    assert all("trace_id" not in r and "span_id" not in r for r in records)  # no span with telemetry off
+    starting = next(r for r in records if r["message"] == "starting")
+    assert starting["version"] == "dev" and starting["commit"] == "unknown"
+    assert "telemetry off, profiling off" in starting["telemetry"]
+    assert starting["service"] == "email-service"
+    assert any('order=ord"1' in m for m in messages)  # the quote survived as valid JSON
+    assert "jane.doe@example.com" not in stdout  # no recipient (PII) in logs
     assert "Received SIGTERM, shutting down" in messages
     assert messages[-1] == "EmailService stopped"
+
+
+@pytest.mark.parametrize("endpoint", ["", "not-a-url", "alloy:4317", "http://"])
+def test_malformed_or_empty_endpoint_means_off_not_a_crash(endpoint):
+    code = "import telemetry; print(telemetry.TELEMETRY_ENABLED, telemetry.describe())"
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT / "src",
+        env=_clean_env(OTEL_EXPORTER_OTLP_ENDPOINT=endpoint, PYROSCOPE_ADDR="garbage"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "False telemetry off, profiling off"
+
+
+def test_uncaught_startup_error_is_one_json_line(app_dir, tmp_path):
+    """Kafka on with a mailbox database that cannot be opened is fatal: exit 1 and a JSON line, no traceback."""
+    proc = subprocess.run(
+        [sys.executable, "src/server.py"],
+        cwd=app_dir,
+        env=_clean_env(
+            PORT=str(_free_port()),
+            PYTHONUNBUFFERED="1",
+            KAFKA_BROKERS="127.0.0.1:1",
+            MAILBOX_DB=str(tmp_path / "missing-dir" / "mailbox.db"),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 1
+    assert "Traceback" not in proc.stdout + proc.stderr
+    records = [json.loads(line) for line in proc.stdout.splitlines()]
+    assert records[-1]["severity"] == "error"
+    assert records[-1]["message"] == "uncaught exception"
+    assert records[-1]["error"]
 
 
 def test_exits_0_on_sigterm_with_otlp_and_pyroscope_pointed_at_a_collector_that_never_answers(app_dir):

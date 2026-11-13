@@ -1,4 +1,5 @@
-# telemetry must be imported first to patch grpc before anything else
+# Logging comes first so that even an import error is reported as one JSON line; telemetry must then be imported
+# before anything else to patch grpc before the server is built.
 import logging
 import os
 import signal
@@ -7,37 +8,35 @@ import sys
 import threading
 from concurrent import futures
 
-import grpc
-from grpc_health.v1 import health_pb2, health_pb2_grpc
-from jinja2 import TemplateError
-from pythonjsonlogger.json import JsonFormatter
-
-import telemetry
-from generated import email_pb2, email_pb2_grpc, mailbox_pb2_grpc
-from telemetry import start_rpc_metrics  # noqa: F401, E402
+import logsetup
 
 # ---------------------------------------------------------------------------
 # Logger
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger("email-service")
-handler = logging.StreamHandler(sys.stdout)
-# One valid JSON object per line (quotes and newlines in messages are escaped); same keys as before.
-handler.setFormatter(
-    JsonFormatter(
-        ["created", "levelname", "name", "message"],
-        rename_fields={"created": "timestamp", "levelname": "severity"},
-    )
+handler = logsetup.make_handler(
+    os.environ.get("OTEL_SERVICE_NAME", "").strip() or "email-service",
+    os.environ.get("SERVICE_VERSION", "").strip() or "dev",
 )
 logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger.setLevel(logsetup.log_level(os.environ))
 logger.propagate = False
+logsetup.install_excepthooks(logger)
 
-# Imported after the logger exists: these modules log through it.
+import grpc  # noqa: E402
+from grpc_health.v1 import health_pb2, health_pb2_grpc  # noqa: E402
+from jinja2 import TemplateError  # noqa: E402
+
+# Imported after the logger exists: these modules log through it. Importing telemetry (directly or through
+# mailbox_service) patches grpc.server before create_server() runs.
+import telemetry  # noqa: E402
 from consumer import OrdersPlacedConsumer, RepeatFilter  # noqa: E402
+from generated import email_pb2, email_pb2_grpc, mailbox_pb2_grpc  # noqa: E402
 from mailbox_service import MailboxServicer  # noqa: E402
 from mailbox_store import MailboxStore  # noqa: E402
 from rendering import render_html  # noqa: E402
+from telemetry import start_rpc_metrics  # noqa: E402
 
 # The Kafka client's own messages (connection problems, rebalances) go through the same JSON format; it never logs
 # record payloads. Without this they would end up on stderr in a different format. Repeats are rate limited (a
@@ -63,25 +62,25 @@ class EmailServiceServicer(email_pb2_grpc.EmailServiceServicer):
     def SendOrderConfirmation(self, request, context):
         end_metrics = start_rpc_metrics("SendOrderConfirmation")
         try:
-            email = request.email
             order = request.order
 
             # Render the confirmation template
             try:
                 render_html(order)
             except TemplateError as err:
-                logger.error(f"Template rendering failed: {err}")
+                logger.error("Template rendering failed", extra={"error": str(err)})
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details("An error occurred when preparing the confirmation mail.")
                 end_metrics("13")  # INTERNAL
                 return email_pb2.Empty()
 
-            logger.info(f"A request to send order confirmation email to {email} has been received.")
+            # The recipient is deliberately not logged (no PII in logs): the order id identifies the request.
+            logger.info(f"A request to send order confirmation email for order={order.order_id} has been received.")
             end_metrics("0")  # OK
             return email_pb2.Empty()
 
         except Exception as err:
-            logger.error(f"SendOrderConfirmation failed: {err}")
+            logger.error("SendOrderConfirmation failed", extra={"error": str(err)})
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details("Failed to send order confirmation.")
             end_metrics("13")  # INTERNAL
@@ -156,7 +155,7 @@ def open_store(path: str, kafka_on: bool) -> MailboxStore:
         return MailboxStore(path)
     except (OSError, sqlite3.Error) as err:
         if kafka_on:
-            logger.error(f"cannot open the mailbox database {path}: {err}")
+            logger.error(f"cannot open the mailbox database {path}", extra={"error": str(err)})
             raise
         logger.warning(
             f"cannot open the mailbox database {path} ({err}); Kafka is off, using an empty in-memory mailbox"
@@ -174,7 +173,16 @@ def main() -> int:
     server = create_server(store)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
-    logger.info(f"EmailService gRPC server started on port {port} ({telemetry.describe()})")
+    logger.info(
+        "starting",
+        extra={
+            "fields": {
+                "commit": telemetry.service_commit(os.environ),
+                "port": port,
+                "telemetry": telemetry.describe(),
+            }
+        },
+    )
 
     consumer = None
     if brokers:

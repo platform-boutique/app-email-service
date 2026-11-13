@@ -1,104 +1,24 @@
 """
 Unit tests for telemetry.py — specifically the start_rpc_metrics helper.
 
-All OTel SDK objects (MeterProvider, counters, histograms, etc.) and the
-Pyroscope / Prometheus side-effects are mocked so these tests run in CI
-with zero external infra.
+The metric instruments are mocked so these tests run in CI with zero external infra.
 """
 
-import logging
-import sys
-import types
 from unittest.mock import MagicMock
 
-# ---------------------------------------------------------------------------
-# Stub every telemetry side-effect before importing the module
-# ---------------------------------------------------------------------------
+import pytest
 
-
-def _install_otel_stubs():
-    """Replace opentelemetry packages with no-op mocks."""
-
-    def _mod(name):
-        m = types.ModuleType(name)
-        sys.modules[name] = m
-        return m
-
-    # opentelemetry.trace
-    trace_mod = _mod("opentelemetry.trace")
-    trace_mod.set_tracer_provider = MagicMock()
-
-    # opentelemetry.metrics
-    metrics_mod = _mod("opentelemetry.metrics")
-    fake_meter = MagicMock()
-    metrics_mod.set_meter_provider = MagicMock()
-    metrics_mod.get_meter = MagicMock(return_value=fake_meter)
-
-    # SDK / exporters
-    for name in [
-        "opentelemetry",
-        "opentelemetry.sdk",
-        "opentelemetry.sdk.trace",
-        "opentelemetry.sdk.trace.export",
-        "opentelemetry._logs",
-        "opentelemetry.exporter.otlp.proto.grpc",
-        "opentelemetry.exporter.otlp.proto.grpc._log_exporter",
-        "opentelemetry.exporter.otlp.proto.grpc.metric_exporter",
-        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
-        "opentelemetry.sdk._logs",
-        "opentelemetry.sdk._logs.export",
-        "opentelemetry.sdk.metrics.export",
-        "opentelemetry.sdk.metrics",
-        "opentelemetry.sdk.metrics.view",
-        "opentelemetry.sdk.metrics._internal",
-        "opentelemetry.sdk.metrics._internal.aggregation",
-        "opentelemetry.sdk.resources",
-        "opentelemetry.instrumentation.grpc",
-    ]:
-        sys.modules.setdefault(name, types.ModuleType(name))
-
-    # Concrete classes used by telemetry.py
-    sys.modules["opentelemetry.sdk.trace"].TracerProvider = MagicMock()
-    sys.modules["opentelemetry.sdk.trace.export"].BatchSpanProcessor = MagicMock()
-    sys.modules["opentelemetry.exporter.otlp.proto.grpc.trace_exporter"].OTLPSpanExporter = MagicMock()
-    sys.modules["opentelemetry.exporter.otlp.proto.grpc.metric_exporter"].OTLPMetricExporter = MagicMock()
-    sys.modules["opentelemetry.exporter.otlp.proto.grpc._log_exporter"].OTLPLogExporter = MagicMock()
-    sys.modules["opentelemetry.sdk.metrics.export"].PeriodicExportingMetricReader = MagicMock()
-    sys.modules["opentelemetry._logs"].set_logger_provider = MagicMock()
-    sys.modules["opentelemetry.sdk._logs"].LoggerProvider = MagicMock()
-    # must be a real logging.Handler-like object because telemetry attaches it to the service logger
-    sys.modules["opentelemetry.sdk._logs"].LoggingHandler = MagicMock(side_effect=lambda *a, **k: logging.NullHandler())
-    sys.modules["opentelemetry.sdk._logs.export"].BatchLogRecordProcessor = MagicMock()
-    sys.modules["opentelemetry.sdk.metrics"].MeterProvider = MagicMock()
-    sys.modules["opentelemetry.sdk.metrics.view"].View = MagicMock()
-    sys.modules["opentelemetry.sdk.metrics._internal.aggregation"].ExplicitBucketHistogramAggregation = MagicMock()
-
-    resource_mod = sys.modules["opentelemetry.sdk.resources"]
-    resource_mod.Resource = MagicMock()
-    resource_mod.SERVICE_NAME = "service.name"
-    resource_mod.SERVICE_VERSION = "service.version"
-
-    grpc_instr = sys.modules["opentelemetry.instrumentation.grpc"]
-    grpc_instr.GrpcInstrumentorServer = MagicMock()
-
-    return fake_meter
-
-
-def _install_misc_stubs():
-    prometheus_client = types.ModuleType("prometheus_client")
-    prometheus_client.start_http_server = MagicMock()
-    sys.modules["prometheus_client"] = prometheus_client
-
-    pyroscope_mod = types.ModuleType("pyroscope")
-    pyroscope_mod.configure = MagicMock()
-    sys.modules["pyroscope"] = pyroscope_mod
-
-
-_fake_meter = _install_otel_stubs()
-_install_misc_stubs()
-
-# Now import the real telemetry module
+# The real module is imported: with the telemetry variables unset (the default in CI) it loads no SDK and the
+# instruments are API no-ops, which the fixture below replaces with mocks. Nothing is stubbed in sys.modules, so the
+# other test files can use the real OpenTelemetry API/SDK.
 import telemetry  # noqa: E402  (src/ must be on sys.path)
+
+
+@pytest.fixture(autouse=True)
+def _mock_instruments(monkeypatch):
+    for name in ("rpc_server_duration", "rpc_server_requests_total", "rpc_server_active_requests"):
+        monkeypatch.setattr(telemetry, name, MagicMock())
+
 
 # ---------------------------------------------------------------------------
 # Tests for start_rpc_metrics
