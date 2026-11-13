@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from jinja2 import TemplateError
 
+from kafka_trace import consumer_span
 from mailbox_store import MailboxStore
 from rendering import EventError, order_view_from_event, render_html, render_text, subject_for
 
@@ -238,24 +239,30 @@ class OrdersPlacedConsumer:
                     return False  # shutting down uncommitted: redelivered at the next start
 
     def _process(self, consumer, record) -> bool:
-        """Handle one record with retry on transient failures, then commit. False when we stopped before the commit."""
-        pos = Position(record.topic, record.partition, record.offset)
-        backoff = Backoff(self._backoff_initial, self._backoff_max)
-        while True:
-            try:
-                outcome = handle_message(self.store, pos, record.value)
-                break
-            except TransientError as err:
-                self.failed_attempts += 1
-                delay = backoff.next()
-                logger.error(f"handling {pos} failed, retrying in {delay:.0f}s: {err}")
-                if self._wait(delay):
-                    return False
-        if outcome == SKIPPED:
-            self.skipped += 1
-        else:
-            self.processed += 1
-        return self._commit(consumer, pos, record)
+        """Handle one record with retry on transient failures, then commit. False when we stopped before the commit.
+
+        The whole thing runs in a CONSUMER span, a child of the producer span when the record carries `traceparent`
+        (OBS-61); the log lines written meanwhile carry its trace_id/span_id."""
+        with consumer_span(record, self.group_id) as span:
+            pos = Position(record.topic, record.partition, record.offset)
+            backoff = Backoff(self._backoff_initial, self._backoff_max)
+            while True:
+                try:
+                    outcome = handle_message(self.store, pos, record.value)
+                    break
+                except TransientError as err:
+                    self.failed_attempts += 1
+                    delay = backoff.next()
+                    span.record_exception(err)
+                    logger.error(f"handling {pos} failed, retrying in {delay:.0f}s", extra={"error": str(err)})
+                    if self._wait(delay):
+                        return False
+            span.set_attribute("email.outcome", outcome)
+            if outcome == SKIPPED:
+                self.skipped += 1
+            else:
+                self.processed += 1
+            return self._commit(consumer, pos, record)
 
     def run(self) -> None:
         consumer = self._connect()
