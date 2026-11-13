@@ -65,20 +65,23 @@ Active only when `KAFKA_BROKERS` is non-empty. Event format: `CONTRACT-kafka.md`
 | Topic does not exist yet | `info` log once, waits; the topic is picked up at the next metadata refresh (`metadata_max_age_ms` = 30 s) |
 | `SIGTERM` | The current message is finished and committed, the consumer leaves the group and closes, the process exits `0` (see shutdown below) |
 
-The consumer never logs the recipient or the address; the **gRPC path still logs the recipient** as it always did. The Kafka client's own log lines go through the same JSON format, identical lines are rate limited to one per minute. There is no lag/processed/failed counter: this service has no `/metrics` (metrics are OTLP-pushed RPC metrics only); the counts are logs.
+Neither the consumer nor the gRPC path logs the recipient or the address (the gRPC path logs `order=<id>`). The Kafka client's own log lines go through the same JSON format, identical lines are rate limited to one per minute. There is no lag/processed/failed counter: this service has no `/metrics` (metrics are OTLP-pushed RPC metrics only); the counts are logs.
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `8080` | gRPC listen port |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (telemetry off) | OTLP/**gRPC** endpoint for **traces, metrics and logs** (scheme required), e.g. `http://alloy.monitoring.svc.cluster.local:4317`. Legacy fallback: `COLLECTOR_SERVICE_ADDR` (`host:port`). Telemetry is on only when one of them is set and non-empty |
-| `OTEL_SDK_DISABLED` | — | `true` forces telemetry off even with an endpoint set (the legacy `ENABLE_TRACING=0` does the same) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (telemetry off) | OTLP/**gRPC** endpoint for **traces, metrics and logs**: an absolute `http(s)://host:port` URL, e.g. `http://alloy.monitoring.svc.cluster.local:4317`. Telemetry is on only when this is a valid URL; empty or malformed means off (never a crash). The old `COLLECTOR_SERVICE_ADDR` and `ENABLE_TRACING` are no longer read |
+| `OTEL_SDK_DISABLED` | — | `true` (trimmed, any case) forces everything off: telemetry and profiling, even with an endpoint set |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `15000` | Milliseconds between metric pushes |
 | `OTEL_SERVICE_NAME` | `email-service` | `service.name` — becomes the Prometheus `job` and the Loki `service_name`; keep the default, dashboards depend on it |
-| `SERVICE_VERSION` | `1.0.0` | `service.version` resource attribute |
-| `PYROSCOPE_ADDR` | unset (profiling off) | Profiles use the Pyroscope SDK push protocol (**not** OTLP). Point it at Alloy (`http://alloy.monitoring.svc.cluster.local:4040`), which forwards to Pyroscope, or directly at Pyroscope. Profiling is on only when this is set and non-empty |
-| `ENABLE_PROFILING` | — | `0` forces profiling off even with `PYROSCOPE_ADDR` set; any other value (or unset) leaves the decision to `PYROSCOPE_ADDR` |
+| `SERVICE_VERSION` | `dev` | `service.version` resource attribute, the `version` log field and the Pyroscope `version` tag |
+| `SERVICE_COMMIT` | `unknown` | Commit id, logged once at start (`message: "starting"`); set it at deploy time |
+| `DEPLOYMENT_ENVIRONMENT` | `local` | `deployment.environment` resource attribute and the Pyroscope `environment` tag |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warning` (or `warn`) or `error`, case-insensitive; an unknown value means `info` |
+| `PYROSCOPE_ADDR` | unset (profiling off) | Profiles use the Pyroscope SDK push protocol (**not** OTLP): an absolute `http(s)://` URL, e.g. `http://pyroscope:4040`, or Alloy. There is no default address; profiling is on only when this is a valid URL. Tags: `service_name`, `version`, `environment` |
+| `ENABLE_PROFILING` | — | `0` forces profiling off even with `PYROSCOPE_ADDR` set; `1` alone starts nothing |
 | `KAFKA_BROKERS` | empty (Kafka off) | Comma separated bootstrap servers, e.g. `kafka:9092`. Empty or unset = the `orders.placed` consumer is off and the service behaves as before |
 | `KAFKA_CONSUMER_GROUP` | `email-service` | Consumer group of the consumer |
 | `MAILBOX_DB` | `/data/mailbox.db` | SQLite file of the mailbox (the image creates `/data` for uid 100 and declares it a `VOLUME`); `:memory:` is allowed (tests). With Kafka on, a database that cannot be opened is fatal (exit 1); with Kafka off the service logs a warning and uses an empty in-memory mailbox instead |
@@ -88,8 +91,8 @@ Notes:
 - No secrets and no mail-server settings exist. Kafka runs without authentication or TLS (`PLAINTEXT`, local demo).
 - Telemetry is **pushed**, not scraped: traces, metrics and logs share one OTLP/gRPC endpoint (Alloy); profiles go to Pyroscope (via Alloy). `service.instance.id` is the pod hostname, so replicas stay distinct in Mimir.
 - The former Prometheus endpoint (`METRICS_PORT`) no longer exists. Logs go to stdout as JSON lines and, with telemetry on, are additionally exported over OTLP with trace ids.
-- With everything unset the service starts with telemetry and profiling off: the OTel SDK and exporters are not even imported, the RPC metric instruments are API no-ops, and the only startup line is `EmailService gRPC server started on port 8080 (telemetry off, profiling off)` (verified from source and in the image).
-- With an endpoint set but no reachable collector, the exporters log retry errors to stderr and the service keeps serving.
+- With everything unset the service starts with telemetry and profiling off: the OTel SDK and exporters are not even imported, the RPC metric instruments are API no-ops, and the startup line is `{"message":"starting", ... "telemetry":"telemetry off, profiling off"}` (tests run the real server and check it; not re-checked in the image).
+- With an endpoint set but no reachable collector, the exporters log retry errors to stderr and the service keeps serving. Resource attributes on every signal: `service.name`, `service.version`, `service.namespace=everly`, `deployment.environment`, `service.instance.id` (hostname).
 
 ## Container image
 
@@ -174,16 +177,18 @@ and was verified under the `restricted` Pod Security Standard on the earlier loc
 |---|---|---|
 | **Traces** | OpenTelemetry SDK, `GrpcInstrumentorServer`, OTLP/gRPC exporter (`BatchSpanProcessor`); only when telemetry is on | Alloy `:4317` → Tempo |
 | **Metrics** | Hand-rolled RPC instruments, `PeriodicExportingMetricReader` over OTLP/gRPC every 15 s (replaces the Prometheus reader) | Alloy → Mimir |
-| **Logs** | Python `logging` with `python-json-logger` to stdout (always) **and** an OTel `LoggingHandler` (OTLP/gRPC, with trace ids; only when telemetry is on) | Alloy → Loki |
-| **Profiles** | `pyroscope-io`, tagged with `version`; only when profiling is on | Alloy `:4040` → Pyroscope |
+| **Logs** | Python `logging` with an own stdlib JSON formatter (`src/logsetup.py`) to stdout (always) **and** an OTel `LoggingHandler` (OTLP/gRPC, with trace ids; only when telemetry is on) | Alloy → Loki |
+| **Profiles** | `pyroscope-io`, tags `service_name`, `version`, `environment`; only when `PYROSCOPE_ADDR` is a valid URL | Alloy `:4040` → Pyroscope |
 
-Metric names: `rpc_server_duration_seconds_{bucket,count,sum}` (buckets 1 ms … 10 s; the unit `s` yields `_seconds`), `rpc_server_requests_total`, `rpc_server_active_requests` (labels `rpc_system`, `rpc_service`, `rpc_method`, `rpc_grpc_status_code`; `rpc_service` is `hipstershop.EmailService` or `hipstershop.mailbox.MailboxService`). There is no Kafka lag/processed/failed metric (no `/metrics` here); the consumer reports through logs: one `info` line per stored mail (`order=<id>`, `orders.placed[<partition>]@<offset>`), `warn` for skipped records, `error` for retried failures. The payload (email, address) is never logged by the consumer. Each stdout line is one valid JSON object with the keys `timestamp` (epoch seconds), `severity`, `name`, `message` (quotes and newlines in messages are escaped; a test asserts this).
+Metric names: `rpc_server_duration_seconds_{bucket,count,sum}` (buckets 1 ms … 10 s; the unit `s` yields `_seconds`), `rpc_server_requests_total`, `rpc_server_active_requests` (labels `rpc_system`, `rpc_service`, `rpc_method`, `rpc_grpc_status_code`; `rpc_service` is `hipstershop.EmailService` or `hipstershop.mailbox.MailboxService`). There is no Kafka lag/processed/failed metric (no `/metrics` here); the consumer reports through logs: one `info` line per stored mail (`order=<id>`, `orders.placed[<partition>]@<offset>`), `warn` for skipped records, `error` for retried failures. The payload (email, address) is never logged, on neither path (the gRPC path logs `order=<id>` since the observability change). Each stdout line is one valid JSON object (quotes and newlines are escaped; a test asserts this) with `timestamp` (RFC3339 UTC, milliseconds, e.g. `2026-11-13T10:00:00.123Z`), `severity` (`debug`, `info`, `warning`, `error`), `message`, `service`, `version`, `trace_id` and `span_id` (hex, only while a span is active, never empty or zero) and `error` (string, on errors). The former keys `name` and the epoch-float `timestamp` are gone. There is no `request_id` (this service has none). `LOG_LEVEL` sets the level. Uncaught exceptions, also at import time or in a thread, are one JSON line (`message: "uncaught exception"`, `error`) and exit code 1, no traceback on stdout.
+
+**Kafka trace context (OBS-61).** The consumer extracts W3C `traceparent`/`tracestate` from `record.headers` (kafka-python: list of `(key, bytes)`) and handles each record in a CONSUMER span `orders.placed process` that is a child of the producer span (attributes `messaging.system=kafka`, `messaging.destination.name`, `messaging.operation=process`, `messaging.consumer.group.name`, partition, offset, and `email.outcome`), so the order is one trace from the browser through checkout, Kafka and this service, and the log lines of the message carry its `trace_id`/`span_id`. Missing, non-UTF-8 or malformed headers start a new root trace (there is nothing to link to) and never break consumption. gRPC calls get a server span from `GrpcInstrumentorServer`, and the handler's log lines carry its ids (tested in-process with an in-memory exporter). With telemetry off the ids of an incoming header still appear in the log lines of that message (API-only, non-recording span). Metrics stay OTLP-pushed RPC metrics; there is no scrape endpoint on purpose (the Go services serve `/metrics` on 9090, this service delivers RED metrics over OTLP).
 
 Every series carries `job="email-service"` (from `service.name`) and `instance=<pod name>` (`service.instance.id`), which is what the Grafana dashboards select on. Logs land in Loki with `service_name="email-service"` and trace/span ids, so a log line links to its trace.
 
 ## Running locally
 
-Requirements: Python 3.13 (see `.python-version`; 3.12 also works), Docker, [`grpcurl`](https://github.com/fullstorydev/grpcurl).
+Requirements: Python 3.12 (what the image runs; `uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt`) or 3.13 (`.python-version`, what the lock was compiled for), Docker, [`grpcurl`](https://github.com/fullstorydev/grpcurl).
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
@@ -244,7 +249,9 @@ grpcurl -plaintext -proto proto/mailbox.proto -d '{"email_id": "<id from the lis
 │   ├── consumer.py      # orders.placed consumer (kafka-python): parse/skip rules, retry, manual commit
 │   ├── mailbox_store.py # SQLite mailbox (stdlib sqlite3, WAL, one lock), idempotent by event_id
 │   ├── mailbox_service.py # MailboxService servicer
-│   ├── telemetry.py     # telemetry contract, OTel traces/metrics/logs, Pyroscope, bounded shutdown; imported first
+│   ├── telemetry.py     # telemetry contract, resource attributes, OTel traces/metrics/logs, Pyroscope, bounded shutdown
+│   ├── logsetup.py      # JSON log formatter (shared field set, trace ids), LOG_LEVEL, JSON excepthooks
+│   ├── kafka_trace.py   # traceparent from record.headers -> CONSUMER span
 │   ├── generated/       # protoc output (git: only __init__.py; real stubs are built in Docker)
 │   └── __init__.py
 ├── templates/confirmation.html     # Jinja2 order-confirmation template (inline styles only)
@@ -264,6 +271,7 @@ Run on this branch (2026-10-31, Python 3.12.3 venv with the pinned `requirements
 | What | Result |
 |---|---|
 | `ruff check .` and `ruff format --check .` | clean |
+| Observability step 3 (2026-11-13, branch `feat/observability-step3`): `uv venv --python 3.12` (3.12.3) + `uv pip install -r requirements.txt -r requirements-dev.txt`, stubs generated into `src/generated`, `pytest` | 200 passed, 6 skipped (the Kafka integration tests, not run); new: env matrix, log golden line and trace ids (in-process gRPC server with an in-memory exporter), resource attributes, Kafka header round trip and malformed headers, consumer span plus log ids, JSON startup failure. `uvx ruff check .` and `ruff format --check .` clean. NOT run for this change: the image build, the compose stack, the integration tests with a real broker (so the header round trip with the real checkout producer is unverified), Tempo/Loki queries |
 | `pytest` (no generated stubs in `src/generated`, as in CI) | 146 passed, 6 skipped (the Kafka integration tests); the pre-existing tests are unchanged except the two column-header asserts in `tests/test_template.py` ("Item No." is now "Item") and the stub compilation in the `app_dir` fixture of `tests/test_lifecycle.py`, which now includes `mailbox.proto` |
 | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` against a throwaway `apache/kafka:4.3.2` | 6 passed: broker started **after** the consumer (it waits, then catches up), event to one mail listed/fetched through the real gRPC servicer, the same event twice = one mail, restart resumes after the committed offset (the second consumer processed exactly the one new record), a new group reads from the earliest offset, malformed + `schema_version` 2 records skipped and the good one behind them stored |
 | `docker build -t email-service:local .` and a container smoke test (run before the template rewrite of 2026-10-31 evening; the image was not rebuilt after it) on a private docker network with a throwaway Kafka and a named volume | image 184 MB; service started before the broker was up, recovered, consumed an event (1 mail), a duplicate was ignored; `ListOrderEmails` / `GetOrderEmail` via `grpcurl -proto` returned the mail (with bodies only in `GetOrderEmail`), wrong `order_id` = `NOT_FOUND`, old `SendOrderConfirmation` still `{}`, health `SERVING` also with the broker stopped; the mailbox survived a container restart and the restart did not re-read old offsets; `docker stop` exit code 0 (about 0.6 s with Kafka up, consumer stopped within 20 ms of `SIGTERM` with Kafka down); the service restarted while the broker was gone, and a broker created afterwards was picked up (second event stored, about 40 s after the produce) |
@@ -281,7 +289,7 @@ Not run:
 
 - Does not send email; the mailbox is the only place a "sent" mail exists.
 - The template has no logo or web font (no external resources: the mail is shown in a sandboxed iframe); the legacy gRPC path renders ids and a computed total because that request carries no names or total.
-- The gRPC path logs the recipient address (as before); the consumer path never logs email or address.
+- Neither path logs the recipient address (the gRPC path used to; it logs `order=<id>` now).
 - The mailbox is one SQLite file per replica: **run one replica** with Kafka on (see Kubernetes). No retention or pruning: it grows with every order.
 - The mailbox stores recipients and bodies in clear text; access control is the caller's job (`ListOrderEmails` trusts the order ids it is given).
 - Delivery is at-least-once: after a crash between the store and the commit the event is read again and ignored by the unique `event_id`. A mail's `created_at` is the time it was stored, not the event's `occurred_at`.

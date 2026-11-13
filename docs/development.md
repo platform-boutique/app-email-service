@@ -2,7 +2,7 @@
 
 ## Running locally
 
-Requirements: Python 3.13 (see `.python-version`; 3.12 also works), Docker, [`grpcurl`](https://github.com/fullstorydev/grpcurl).
+Requirements: Python 3.12 (what the image runs; `uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt`) or 3.13 (`.python-version`, what the lock was compiled for), Docker, [`grpcurl`](https://github.com/fullstorydev/grpcurl).
 
 ```bash
 python -m venv .venv && . .venv/bin/activate

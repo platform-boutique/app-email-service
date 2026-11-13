@@ -40,4 +40,4 @@ Active only when `KAFKA_BROKERS` is non-empty. Event format: `CONTRACT-kafka.md`
 | Topic does not exist yet | `info` log once, waits; the topic is picked up at the next metadata refresh (`metadata_max_age_ms` = 30 s) |
 | `SIGTERM` | The current message is finished and committed, the consumer leaves the group and closes, the process exits `0` (see shutdown below) |
 
-The consumer never logs the recipient or the address; the **gRPC path still logs the recipient** as it always did. The Kafka client's own log lines go through the same JSON format, identical lines are rate limited to one per minute. There is no lag/processed/failed counter: this service has no `/metrics` (metrics are OTLP-pushed RPC metrics only); the counts are logs.
+Neither the consumer nor the gRPC path logs the recipient or the address (the gRPC path logs `order=<id>`). The Kafka client's own log lines go through the same JSON format, identical lines are rate limited to one per minute. There is no lag/processed/failed counter: this service has no `/metrics` (metrics are OTLP-pushed RPC metrics only); the counts are logs.

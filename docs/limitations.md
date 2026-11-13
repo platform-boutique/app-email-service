@@ -2,7 +2,7 @@
 
 - Does not send email; the mailbox is the only place a "sent" mail exists.
 - The template has no logo or web font (no external resources: the mail is shown in a sandboxed iframe); the legacy gRPC path renders ids and a computed total because that request carries no names or total.
-- The gRPC path logs the recipient address (as before); the consumer path never logs email or address.
+- Neither path logs the recipient address (the gRPC path used to; it logs `order=<id>` now).
 - The mailbox is one SQLite file per replica: **run one replica** with Kafka on (see Kubernetes). No retention or pruning: it grows with every order.
 - The mailbox stores recipients and bodies in clear text; access control is the caller's job (`ListOrderEmails` trusts the order ids it is given).
 - Delivery is at-least-once: after a crash between the store and the commit the event is read again and ignored by the unique `event_id`. A mail's `created_at` is the time it was stored, not the event's `occurred_at`.
