@@ -41,7 +41,10 @@ ENV PYTHONUNBUFFERED=1
 ENV SERVICE_VERSION=${SERVICE_VERSION} \
     SERVICE_COMMIT=${SERVICE_COMMIT}
 
-RUN apk add --no-cache libstdc++ \
+# apk upgrade: the base image (python:3.12-alpine, Alpine 3.24.4) ships krb5-libs 1.22.2-r1 with 16 HIGH CVEs fixed in 1.22.3-r0;
+# the Trivy gate fails on fixed HIGH findings, so the runtime stage takes the current Alpine packages.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache libstdc++ \
     && addgroup -S -g 10001 appgroup && adduser -S -u 10001 -G appgroup appuser \
     && mkdir /data && chown 10001:10001 /data
 
