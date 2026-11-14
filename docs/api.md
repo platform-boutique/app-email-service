@@ -25,7 +25,7 @@ Database errors answer `UNAVAILABLE`. The RPC metrics carry `rpc_service="hipste
 
 ### Kafka consumer (`orders.placed`)
 
-Active only when `KAFKA_BROKERS` is non-empty. Event format: `CONTRACT-kafka.md` section 1 (JSON, `schema_version` 1, `event_id` = UUID v5 of the order id).
+Active only when `KAFKA_BROKERS` is non-empty. Event format: a JSON object with `schema_version` 1, `event_type` `order.placed`, `event_id` (UUID v5 of the order id), `order_id`, `email` and the order fields the template renders (parsed in `src/consumer.py`, examples in `tests/test_consumer.py`).
 
 | Situation | Behaviour |
 |---|---|

@@ -1,6 +1,6 @@
 """orders.placed consumer: renders the order-confirmation mail, stores it in the mailbox, commits the offset.
 
-Rules (CONTRACT-kafka.md section 1): consumer group, earliest offset for a new group, offsets committed by hand and
+Rules: consumer group, earliest offset for a new group, offsets committed by hand and
 only after the mail is stored (at-least-once; the store is idempotent by event_id), a topic or broker that is not
 there yet is waited for, malformed JSON / unsupported schema are skipped with a warning (never the payload in the
 log), a transient failure (the database) is retried with backoff and never skipped, SIGTERM (stop_event) finishes the
