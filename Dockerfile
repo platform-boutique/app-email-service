@@ -27,12 +27,23 @@ RUN mkdir -p generated \
 # ---- Runtime stage ----
 FROM python:3.12-alpine AS runtime
 
+ARG SERVICE_VERSION=dev
+ARG SERVICE_COMMIT=unknown
+
+LABEL org.opencontainers.image.title="email-service" \
+      org.opencontainers.image.source="https://github.com/platform-boutique/app-email-service" \
+      org.opencontainers.image.revision="${SERVICE_COMMIT}" \
+      org.opencontainers.image.version="${SERVICE_VERSION}" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV SERVICE_VERSION=${SERVICE_VERSION} \
+    SERVICE_COMMIT=${SERVICE_COMMIT}
 
 RUN apk add --no-cache libstdc++ \
-    && addgroup -S -g 101 appgroup && adduser -S -u 100 -G appgroup appuser \
-    && mkdir /data && chown 100:101 /data
+    && addgroup -S -g 10001 appgroup && adduser -S -u 10001 -G appgroup appuser \
+    && mkdir /data && chown 10001:10001 /data
 
 # The mailbox (SQLite, WAL; MAILBOX_DB defaults to /data/mailbox.db). Mount a volume here; a named volume inherits the ownership above.
 VOLUME /data
@@ -50,8 +61,8 @@ COPY --from=builder --chown=appuser:appgroup /build/generated ./src/generated/
 COPY --chown=appuser:appgroup src/ ./src/
 COPY --chown=appuser:appgroup templates/ ./templates/
 
-# Numeric so Kubernetes runAsNonRoot can verify it (matches the charts' runAsUser: 100 / runAsGroup: 101)
-USER 100:101
+# Numeric so Kubernetes runAsNonRoot can verify it (IMG-02: UID:GID 10001)
+USER 10001:10001
 
 EXPOSE 8080
 

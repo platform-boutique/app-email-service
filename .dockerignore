@@ -14,6 +14,13 @@ mkdocs.yml
 catalog-info.yaml
 .pre-commit-config.yaml
 .trivyignore
+Dockerfile
+STATUS.md
+NOTES*.md
+.env
+.env.*
+*.pem
+*.key
 # Stubs compiled locally for running from source; the image compiles its own in the builder stage and
 # `COPY src/` would otherwise overwrite them.
 src/generated/*_pb2*.py

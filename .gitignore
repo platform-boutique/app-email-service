@@ -6,3 +6,28 @@ __pycache__/
 .coverage
 # compiled locally from proto/ (see README); only __init__.py is tracked
 src/generated/*_pb2*.py
+
+# Environment files, key material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Coverage, TechDocs build output
+htmlcov/
+/site/
+docs-venv/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Agent / session notes: never committed
+STATUS.md
+NOTES*.md
+PLAN.md
+.claude/
