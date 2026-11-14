@@ -283,8 +283,8 @@ class OrdersPlacedConsumer:
                         if consumer.partitions_for_topic(self.topic) is None:
                             logger.info(f"topic {self.topic} does not exist yet, waiting for it")
                             topic_warned = True
-                    except Exception:
-                        pass
+                    except Exception as err:  # only a hint for the log; the poll loop must not stop for it
+                        logger.debug(f"topic lookup failed ({type(err).__name__})")
                 for records in batches.values():
                     for record in records:
                         topic_warned = False

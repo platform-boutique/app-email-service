@@ -4,6 +4,7 @@ One connection shared by the consumer thread and the gRPC worker threads, guarde
 time; the mailbox is tiny). Idempotent by event_id: a replayed event stores nothing new.
 """
 
+import json
 import sqlite3
 import threading
 import uuid
@@ -83,12 +84,13 @@ class MailboxStore:
         """Mails of the given orders, newest first, WITHOUT bodies (the body fields are empty)."""
         if not order_ids:
             return []
-        marks = ",".join("?" * len(order_ids))
+        # One bound JSON array instead of a "?,?,..." list built by string formatting: the statement text is a constant.
         with self._lock:
             rows = self._db.execute(
-                f"SELECT id, order_id, to_addr, subject, created_at FROM emails WHERE order_id IN ({marks})"
+                "SELECT id, order_id, to_addr, subject, created_at FROM emails"
+                " WHERE order_id IN (SELECT value FROM json_each(?))"
                 " ORDER BY created_at DESC, rowid DESC",
-                order_ids,
+                (json.dumps(order_ids),),
             ).fetchall()
         return [Mail(r["id"], r["order_id"], r["to_addr"], r["subject"], "", "", _parse(r["created_at"])) for r in rows]
 
