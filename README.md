@@ -16,12 +16,12 @@ Part of the [platform-demo](https://github.com/platform-boutique) platform — m
 | **Language / runtime** | Python 3.12 in the image (3.13 pinned for local dev), `grpcio`, Jinja2, `kafka-python` (pure Python), stdlib `sqlite3` |
 | **Image** | `mladenovskistefan/email-service` |
 | **Protocol / port** | gRPC (HTTP/2, plaintext) on `8080` |
-| **Metrics** | Pushed over OTLP/gRPC to Alloy → Mimir every 15 s (no scrape endpoint). Dashboard names: `rpc_server_duration_seconds_{bucket,count,sum}`, `rpc_server_requests_total`, `rpc_server_active_requests` |
+| **Metrics** | Pushed over OTLP/gRPC to Alloy → Mimir every 15 s (no scrape endpoint). Dashboard names: `rpc_server_duration_seconds_{bucket,count,sum}`, `rpc_server_requests_total`, `rpc_server_active_requests`, `build_info`, `python_*` runtime metrics |
 | **Health** | `grpc.health.v1.Health/Check` on `8080` — static `SERVING` |
 | **State** | SQLite mailbox file `MAILBOX_DB` (default `/data/mailbox.db`, WAL; a volume in compose). Empty and unused while Kafka is off |
 | **Depends on** | Optional: Kafka (`KAFKA_BROKERS`, topic `orders.placed`), OTLP collector, Pyroscope. The service starts, answers and stays healthy without any of them |
 | **Called by** | `checkout-service` (`SendOrderConfirmation`, only while Kafka is off), `frontend` (`MailboxService`). Consumes `orders.placed` (published by checkout) |
-| **gRPC reflection** | Not enabled (as before; the contract's "reflection as today" means none) — pass `-proto` to `grpcurl` |
+| **gRPC reflection** | Enabled (`grpcio-reflection`, v1alpha) for `EmailService`, `MailboxService` and `Health`: `grpcurl -plaintext localhost:8080 list` works without the proto files |
 
 ## API
 
@@ -84,7 +84,7 @@ Neither the consumer nor the gRPC path logs the recipient or the address (the gR
 | `ENABLE_PROFILING` | — | `0` forces profiling off even with `PYROSCOPE_ADDR` set; `1` alone starts nothing |
 | `KAFKA_BROKERS` | empty (Kafka off) | Comma separated bootstrap servers, e.g. `kafka:9092`. Empty or unset = the `orders.placed` consumer is off and the service behaves as before |
 | `KAFKA_CONSUMER_GROUP` | `email-service` | Consumer group of the consumer |
-| `MAILBOX_DB` | `/data/mailbox.db` | SQLite file of the mailbox (the image creates `/data` for uid 10001 and declares it a `VOLUME`); `:memory:` is allowed (tests). With Kafka on, a database that cannot be opened is fatal (exit 1); with Kafka off the service logs a warning and uses an empty in-memory mailbox instead |
+| `MAILBOX_DB` | `/data/mailbox.db` | SQLite file of the mailbox (its schema is versioned: forward-only migrations run at start, the version is in `PRAGMA user_version`; a database newer than the release is refused) (the image creates `/data` for uid 10001 and declares it a `VOLUME`); `:memory:` is allowed (tests). With Kafka on, a database that cannot be opened is fatal (exit 1); with Kafka off the service logs a warning and uses an empty in-memory mailbox instead |
 
 Notes:
 
@@ -106,7 +106,7 @@ Multi-stage [`Dockerfile`](Dockerfile):
 - **Entrypoint:** `python src/server.py` (working dir `/app`; `src/` is on `sys.path`, so `from generated import …` resolves).
 - **User:** numeric `USER 10001:10001` (`appuser`/`appgroup`, created with these fixed ids; `id` in the container prints `uid=10001(appuser) gid=10001(appgroup)`). Build args `SERVICE_VERSION` (default `dev`) and `SERVICE_COMMIT` (default `unknown`) set the OCI labels `version`/`revision` (plus `source`, `licenses=Apache-2.0`) and the ENV of the same names.
 - **EXPOSE:** `8080` only.
-- **Docker `HEALTHCHECK`:** Python `grpc.channel_ready_future` against `localhost:${PORT:-8080}` (honours the default).
+- **Docker `HEALTHCHECK`:** exec form (no shell): Python `grpc.channel_ready_future` against `localhost:$PORT`, 8080 when `PORT` is unset or empty.
 - **Image size:** 184 MB uncompressed (`docker images`, local build of this branch on 2026-10-31, was 177 MB before `kafka-python`; the earlier ~41 MB figure was not re-measured and is probably the compressed registry size).
 - **Kafka client:** `kafka-python` 3.0.11 (pure Python, no dependencies). `confluent-kafka` was rejected because PyPI has no `musllinux` wheel for it (checked with `pip download --only-binary=:all: --platform musllinux_1_2_x86_64`; only `manylinux`), so it would need a source build against `librdkafka` on `python:3.12-alpine`. `kafka-python` 3.0.12 is newer but was released 2026-10-26, less than 7 days before the pin.
 - **Reproducibility:** the image installs from the fully pinned `requirements.txt` (compiled from `requirements.in` with `uv`), so transitive versions no longer float between builds. The lock was not regenerated in this change, so its transitive pins are older than what the unpinned build used to pull (e.g. `wrapt 1.17.3` instead of `2.5.1`).
@@ -180,7 +180,7 @@ and was verified under the `restricted` Pod Security Standard on the earlier loc
 | **Logs** | Python `logging` with an own stdlib JSON formatter (`src/logsetup.py`) to stdout (always) **and** an OTel `LoggingHandler` (OTLP/gRPC, with trace ids; only when telemetry is on) | Alloy → Loki |
 | **Profiles** | `pyroscope-io`, tags `service_name`, `version`, `environment`; only when `PYROSCOPE_ADDR` is a valid URL | Alloy `:4040` → Pyroscope |
 
-Metric names: `rpc_server_duration_seconds_{bucket,count,sum}` (buckets 1 ms … 10 s; the unit `s` yields `_seconds`), `rpc_server_requests_total`, `rpc_server_active_requests` (labels `rpc_system`, `rpc_service`, `rpc_method`, `rpc_grpc_status_code`; `rpc_service` is `hipstershop.EmailService` or `hipstershop.mailbox.MailboxService`). There is no Kafka lag/processed/failed metric (no `/metrics` here); the consumer reports through logs: one `info` line per stored mail (`order=<id>`, `orders.placed[<partition>]@<offset>`), `warn` for skipped records, `error` for retried failures. The payload (email, address) is never logged, on neither path (the gRPC path logs `order=<id>` since the observability change). Each stdout line is one valid JSON object (quotes and newlines are escaped; a test asserts this) with `timestamp` (RFC3339 UTC, milliseconds, e.g. `2026-11-13T10:00:00.123Z`), `severity` (`debug`, `info`, `warning`, `error`), `message`, `service`, `version`, `trace_id` and `span_id` (hex, only while a span is active, never empty or zero) and `error` (string, on errors). The former keys `name` and the epoch-float `timestamp` are gone. There is no `request_id` (this service has none). `LOG_LEVEL` sets the level. Uncaught exceptions, also at import time or in a thread, are one JSON line (`message: "uncaught exception"`, `error`) and exit code 1, no traceback on stdout.
+Metric names: `rpc_server_duration_seconds_{bucket,count,sum}` (buckets 1 ms … 10 s; the unit `s` yields `_seconds`), `rpc_server_requests_total`, `rpc_server_active_requests` (labels `rpc_system`, `rpc_service`, `rpc_method`, `rpc_grpc_status_code`; `rpc_service` is `hipstershop.EmailService` or `hipstershop.mailbox.MailboxService`). Consumer metrics (pushed over OTLP like the rest, only with `KAFKA_BROKERS` set): `kafka_consumer_lag{group,topic,partition}` (high watermark minus position, refreshed after every poll of the consumer thread, removed when the consumer stops) and `email_events_processed_total{outcome}` (`stored`, `duplicate`, `skipped`). `build_info{service,version,commit}` is always 1 (version and commit from `SERVICE_VERSION` / `SERVICE_COMMIT`, `dev` / `unknown` when unset). Runtime metrics (standard library only): `python_process_resident_memory_bytes`, `python_process_cpu_seconds_total`, `python_process_uptime_seconds`, `python_process_open_fds`, `python_threads`, `python_gc_collections_total{generation}`, `python_gc_objects_collected_total{generation}`. The consumer also reports through logs: one `info` line per stored mail (`order=<id>`, `orders.placed[<partition>]@<offset>`), `warn` for skipped records, `error` for retried failures. The payload (email, address) is never logged, on neither path (the gRPC path logs `order=<id>` since the observability change). Each stdout line is one valid JSON object (quotes and newlines are escaped; a test asserts this) with `timestamp` (RFC3339 UTC, milliseconds, e.g. `2026-11-13T10:00:00.123Z`), `severity` (`debug`, `info`, `warning`, `error`), `message`, `service`, `version`, `trace_id` and `span_id` (hex, only while a span is active, never empty or zero) and `error` (string, on errors). The former keys `name` and the epoch-float `timestamp` are gone. There is no `request_id` (this service has none). `LOG_LEVEL` sets the level. Uncaught exceptions, also at import time or in a thread, are one JSON line (`message: "uncaught exception"`, `error`) and exit code 1, no traceback on stdout.
 
 **Kafka trace context (OBS-61).** The consumer extracts W3C `traceparent`/`tracestate` from `record.headers` (kafka-python: list of `(key, bytes)`) and handles each record in a CONSUMER span `orders.placed process` that is a child of the producer span (attributes `messaging.system=kafka`, `messaging.destination.name`, `messaging.operation=process`, `messaging.consumer.group.name`, partition, offset, and `email.outcome`), so the order is one trace from the browser through checkout, Kafka and this service, and the log lines of the message carry its `trace_id`/`span_id`. Missing, non-UTF-8 or malformed headers start a new root trace (there is nothing to link to) and never break consumption. gRPC calls get a server span from `GrpcInstrumentorServer`, and the handler's log lines carry its ids (tested in-process with an in-memory exporter). With telemetry off the ids of an incoming header still appear in the log lines of that message (API-only, non-recording span). Metrics stay OTLP-pushed RPC metrics; there is no scrape endpoint on purpose (the Go services serve `/metrics` on 9090, this service delivers RED metrics over OTLP).
 
@@ -219,7 +219,7 @@ docker run --rm -p 8080:8080 -v email-mailbox:/data -e KAFKA_BROKERS=host.docker
 
 To regenerate pinned deps: `uv pip compile requirements.in -o requirements.txt` (the lockfile header shows `uv` was used).
 
-### Manual gRPC testing (no reflection — pass the proto)
+### Manual gRPC testing (reflection is on; `-proto` also works)
 
 ```bash
 grpcurl -plaintext -proto proto/email.proto -d '{
@@ -284,7 +284,7 @@ Not run:
 - More than one replica / partition rebalancing between two live consumers, a `kill -9` of the process between store and commit (the idempotency is covered by the replay tests, the crash itself was not), a database failure in the container (covered with a fake client and a broken store in the unit tests only), and the real frontend and checkout against this service.
 - A topic that is created later than the consumer was only seen in the integration run (the consumer logs/waits), not measured for latency.
 - The Kafka client under load or with a large backlog.
-- The lifecycle tests (`tests/test_lifecycle.py`, existing) are timing based and flaky on this loaded WSL2 host with a jumping clock, on the unchanged baseline too (on Python 3.13 one or two of them fail in most runs and pass when run again; on 3.12 the full run passed).
+- The lifecycle and consumer tests no longer sleep for a guessed time: they wait on events (a commit, a log line, the black hole accepting a connection), the store takes an injected clock, and the remaining deadlines are the contract's 10 s with a margin (see the test run below). The Kafka integration tests (`tests/test_kafka_integration.py`, need a broker, not run) still contain real sleeps.
 
 ## Known limitations
 
@@ -295,7 +295,7 @@ Not run:
 - The mailbox stores recipients and bodies in clear text; access control is the caller's job (`ListOrderEmails` trusts the order ids it is given).
 - Delivery is at-least-once: after a crash between the store and the commit the event is read again and ignored by the unique `event_id`. A mail's `created_at` is the time it was stored, not the event's `occurred_at`.
 - A record whose fields have the wrong types, or that cannot be rendered, is skipped (logged at `error`), not retried.
-- No consumer lag metric; no Kafka authentication/TLS.
+- No Kafka authentication/TLS.
 - `ListOrderEmails` rejects more than 50 distinct order ids (`INVALID_ARGUMENT`) instead of truncating.
 - Health is static `SERVING`: it does not look at Kafka (a broker outage must not remove the pod) and stays `SERVING` during the 2 s shutdown drain; the pod is taken out of the Service by Kubernetes on termination, not by the probe.
 - `requirements.txt` was compiled for Python 3.13 (`--python-version 3.13`) while the image runs 3.12; it installs and runs there (verified by the image build and the local test run on Python 3.12), but the lock was not recompiled for 3.12.

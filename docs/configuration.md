@@ -15,7 +15,7 @@
 | `ENABLE_PROFILING` | — | `0` forces profiling off even with `PYROSCOPE_ADDR` set; `1` alone starts nothing |
 | `KAFKA_BROKERS` | empty (Kafka off) | Comma separated bootstrap servers, e.g. `kafka:9092`. Empty or unset = the `orders.placed` consumer is off and the service behaves as before |
 | `KAFKA_CONSUMER_GROUP` | `email-service` | Consumer group of the consumer |
-| `MAILBOX_DB` | `/data/mailbox.db` | SQLite file of the mailbox (the image creates `/data` for uid 100 and declares it a `VOLUME`); `:memory:` is allowed (tests). With Kafka on, a database that cannot be opened is fatal (exit 1); with Kafka off the service logs a warning and uses an empty in-memory mailbox instead |
+| `MAILBOX_DB` | `/data/mailbox.db` | SQLite file of the mailbox (its schema is versioned: forward-only migrations run at start, the version is in `PRAGMA user_version`; a database newer than the release is refused) (the image creates `/data` for uid 100 and declares it a `VOLUME`); `:memory:` is allowed (tests). With Kafka on, a database that cannot be opened is fatal (exit 1); with Kafka off the service logs a warning and uses an empty in-memory mailbox instead |
 
 Notes:
 

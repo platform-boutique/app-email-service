@@ -106,3 +106,21 @@ def test_mail_from_an_event_is_listed_with_its_subject(api, store):
     )
     resp = mailbox.ListOrderEmails(stubs.mailbox_pb2.ListOrderEmailsRequest(order_ids=["ORD-123"]))
     assert len(resp.emails) == 1 and "ORD-123" in resp.emails[0].subject
+
+
+def test_reflection_lists_every_service_and_serves_descriptors(api):
+    """CODE-02: grpcurl works without the .proto files."""
+    from grpc_reflection.v1alpha import reflection_pb2, reflection_pb2_grpc
+
+    _stubs, _mailbox, channel = api
+    stub = reflection_pb2_grpc.ServerReflectionStub(channel)
+
+    def ask(request):
+        return next(iter(stub.ServerReflectionInfo(iter([request]), timeout=30)))
+
+    listed = ask(reflection_pb2.ServerReflectionRequest(list_services="*"))
+    names = {s.name for s in listed.list_services_response.service}
+    assert {"hipstershop.EmailService", "hipstershop.mailbox.MailboxService", "grpc.health.v1.Health"} <= names
+    for symbol in ("hipstershop.EmailService", "hipstershop.mailbox.MailboxService"):
+        answer = ask(reflection_pb2.ServerReflectionRequest(file_containing_symbol=symbol))
+        assert len(answer.file_descriptor_response.file_descriptor_proto) > 0, symbol

@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 
 from opentelemetry import metrics
 
+from runtime_metrics import register_build_info, register_runtime_metrics
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -239,6 +241,10 @@ atexit.register(shutdown)
 # ---------------------------------------------------------------------------
 
 meter = metrics.get_meter("email-service-grpc")
+
+# build_info (CODE-06) and the Python runtime metrics (OBS-20); callbacks only run on export
+register_build_info(meter, _SERVICE_NAME, _SERVICE_VERSION, _SERVICE_COMMIT)
+register_runtime_metrics(meter)
 
 rpc_server_duration = meter.create_histogram(
     name="rpc_server_duration",

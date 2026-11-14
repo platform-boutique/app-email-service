@@ -33,7 +33,7 @@ docker run --rm -p 8080:8080 -v email-mailbox:/data -e KAFKA_BROKERS=host.docker
 
 To regenerate pinned deps: `uv pip compile requirements.in -o requirements.txt` (the lockfile header shows `uv` was used).
 
-### Manual gRPC testing (no reflection — pass the proto)
+### Manual gRPC testing (reflection is on; `-proto` also works)
 
 ```bash
 grpcurl -plaintext -proto proto/email.proto -d '{
