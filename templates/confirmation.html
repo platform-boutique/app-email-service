@@ -1,37 +1,47 @@
+{#- The macros return plain text. forceescape escapes it exactly once whatever the macro returned: a macro called from
+    an autoescaped template hands back its (unescaped) text marked as safe, which would let a product name through. -#}
+{%- import "_macros.jinja" as m -%}
 <!DOCTYPE html>
 <html>
   <head>
+    <meta charset="utf-8">
     <title>Your Order Confirmation</title>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
   </head>
-  <style>
-    body{
-      font-family: 'DM Sans', sans-serif;
-    }
-  </style>
-  <body>
-    <h2>Your Order Confirmation</h2>
-    <p>Thanks for shopping with us!<p>
-    <h3>Order ID</h3>
-    <p>#{{ order.order_id }}</p>
-    <h3>Shipping</h3>
-    <p>#{{ order.shipping_tracking_id }}</p>
-    <p>{{ order.shipping_cost.units }}. {{ "%02d" | format(order.shipping_cost.nanos // 10000000) }} {{ order.shipping_cost.currency_code }}</p>
-    <p>{{ order.shipping_address.street_address_1 }}, {{order.shipping_address.street_address_2}}, {{order.shipping_address.city}}, {{order.shipping_address.country}} {{order.shipping_address.zip_code}}</p>
-    <h3>Items</h3>
-    <table style="width:100%">
-        <tr>
-          <th>Item No.</th>
-          <th>Quantity</th> 
-          <th>Price</th>
-        </tr>
-        {% for item in order.items %}
-        <tr>
-          <td>#{{ item.item.product_id }}</td>
-          <td>{{ item.item.quantity }}</td> 
-          <td>{{ item.cost.units }}.{{ "%02d" | format(item.cost.nanos // 10000000) }} {{ item.cost.currency_code }}</td>
-        </tr>
-        {% endfor %}
+  <body style="font-family: 'DM Sans', 'Helvetica Neue', Arial, sans-serif; color: #1c1a17; line-height: 1.5; margin: 0; padding: 8px 12px;">
+    <h2 style="margin: 8px 0 4px;">Your Order Confirmation</h2>
+    <p style="margin: 0 0 16px;">Thanks for shopping with us!</p>
+
+    <h3 style="margin: 16px 0 4px;">Order</h3>
+    <p style="margin: 0;">Order ID: #{{ order.order_id }}</p>
+    <p style="margin: 0;">Tracking ID: #{{ order.shipping_tracking_id }}</p>
+
+    <h3 style="margin: 16px 0 4px;">Shipping address</h3>
+    <p style="margin: 0;">{{ m.address(order.shipping_address) | forceescape }}</p>
+
+    <h3 style="margin: 16px 0 4px;">Items</h3>
+    <table style="width: 100%; border-collapse: collapse;">
+      <tr>
+        <th style="text-align: left; padding: 6px 8px; border-bottom: 1px solid #d9d4cb;">Item</th>
+        <th style="text-align: right; padding: 6px 8px; border-bottom: 1px solid #d9d4cb;">Quantity</th>
+        <th style="text-align: right; padding: 6px 8px; border-bottom: 1px solid #d9d4cb;">Price</th>
+        <th style="text-align: right; padding: 6px 8px; border-bottom: 1px solid #d9d4cb;">Total</th>
+      </tr>
+      {% for item in order.items %}
+      <tr>
+        <td style="text-align: left; padding: 6px 8px;">{{ m.item_label(item) | forceescape }}</td>
+        <td style="text-align: right; padding: 6px 8px;">{{ item.item.quantity }}</td>
+        <td style="text-align: right; padding: 6px 8px;">{{ m.money(item.cost) | forceescape }}</td>
+        <td style="text-align: right; padding: 6px 8px;">{{ m.line_total(item.cost, item.item.quantity) | forceescape }}</td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <td colspan="3" style="text-align: right; padding: 6px 8px; border-top: 1px solid #d9d4cb;">Shipping</td>
+        <td style="text-align: right; padding: 6px 8px; border-top: 1px solid #d9d4cb;">{{ m.money(order.shipping_cost) | forceescape }}</td>
+      </tr>
+      <tr>
+        <td colspan="3" style="text-align: right; padding: 6px 8px; font-weight: bold;">Total</td>
+        <td style="text-align: right; padding: 6px 8px; font-weight: bold;">{{ m.order_total(order) | forceescape }}</td>
+      </tr>
     </table>
   </body>
 </html>

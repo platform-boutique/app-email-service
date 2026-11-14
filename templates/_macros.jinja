@@ -1,0 +1,46 @@
+{#- Shared by confirmation.html and confirmation.txt. This file is not .html/.xml, so it is NOT autoescaped: the macros
+    return plain text. confirmation.html applies `| forceescape` to every call (see there), confirmation.txt prints as is. -#}
+
+{#- Money from units + nanos, always 2 decimals (half-up on the nanos), thousands separated: $8.99, 5.25 EUR, $0.01 -#}
+{% macro fmt(total_nanos, code) -%}
+{%- set neg = total_nanos < 0 -%}
+{%- set cents = ((total_nanos | abs) + 5000000) // 10000000 -%}
+{%- set text = "{:,}.{:02d}".format(cents // 100, cents % 100) -%}
+{%- if code == "USD" -%}
+{{ "-" if neg }}${{ text }}
+{%- else -%}
+{{ "-" if neg }}{{ text }}{{ " " ~ code if code }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro money(m) -%}
+{{ fmt((m.units | int) * 1000000000 + (m.nanos | int), m.currency_code or "") }}
+{%- endmacro %}
+
+{#- unit price times quantity -#}
+{% macro line_total(m, quantity) -%}
+{{ fmt(((m.units | int) * 1000000000 + (m.nanos | int)) * (quantity | int), m.currency_code or "") }}
+{%- endmacro %}
+
+{#- The order total: the event carries one; the legacy OrderResult does not, so it is items + shipping -#}
+{% macro order_total(order) -%}
+{%- if order.total is defined -%}
+{{ money(order.total) }}
+{%- else -%}
+{%- set ns = namespace(nanos=(order.shipping_cost.units | int) * 1000000000 + (order.shipping_cost.nanos | int)) -%}
+{%- for item in order.items -%}
+{%- set ns.nanos = ns.nanos + ((item.cost.units | int) * 1000000000 + (item.cost.nanos | int)) * (item.item.quantity | int) -%}
+{%- endfor -%}
+{{ fmt(ns.nanos, order.shipping_cost.currency_code or "") }}
+{%- endif -%}
+{%- endmacro %}
+
+{#- "street, city, state, country zip" without the empty parts -#}
+{% macro address(a) -%}
+{{ [a.street_address, a.city, a.state, [a.country, a.zip_code] | select | join(" ")] | select | join(", ") }}
+{%- endmacro %}
+
+{#- What the customer sees for an item: its name (event) or, on the legacy gRPC path that only has ids, the id -#}
+{% macro item_label(item) -%}
+{{ item.name or item.item.product_id }}
+{%- endmacro %}

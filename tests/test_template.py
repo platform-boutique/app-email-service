@@ -59,9 +59,10 @@ class TestTemplateStructure:
     def test_contains_items_table(self, confirmation_template, make_order):
         html = render(confirmation_template, make_order())
         # Table header row
-        assert "Item No." in html
+        assert ">Item<" in html  # was "Item No." while the column showed product ids
         assert "Quantity" in html
         assert "Price" in html
+        assert ">Total<" in html
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +130,7 @@ class TestOrderItems:
     def test_empty_items_renders_no_product_rows(self, confirmation_template, make_order):
         html = render(confirmation_template, make_order(items=[]))
         # Table headers still present, but no product IDs
-        assert "Item No." in html
+        assert ">Item<" in html
         # No product cells — crude check that the for loop produced nothing
         assert "#PROD" not in html
 

@@ -1,0 +1,17 @@
+{%- import "_macros.jinja" as m -%}
+Your Order Confirmation
+
+Thanks for shopping with us!
+
+Order ID: #{{ order.order_id }}
+Tracking ID: #{{ order.shipping_tracking_id }}
+
+Shipping address:
+{{ m.address(order.shipping_address) }}
+
+Items:
+{% for item in order.items -%}
+- {{ m.item_label(item) }}: {{ item.item.quantity }} x {{ m.money(item.cost) }} = {{ m.line_total(item.cost, item.item.quantity) }}
+{% endfor %}
+Shipping: {{ m.money(order.shipping_cost) }}
+Total: {{ m.order_total(order) }}
