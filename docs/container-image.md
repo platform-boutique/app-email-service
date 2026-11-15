@@ -10,7 +10,7 @@ Multi-stage [`Dockerfile`](https://github.com/platform-boutique/app-email-servic
 - **Entrypoint:** `python src/server.py` (working dir `/app`; `src/` is on `sys.path`, so `from generated import …` resolves).
 - **User:** numeric `USER 100:101` (`appuser`/`appgroup`, created with these fixed ids; `id` in the container prints `uid=100(appuser) gid=101(appgroup)`). Matches the chart's `runAsUser: 100` / `runAsGroup: 101`.
 - **EXPOSE:** `8080` only.
-- **Docker `HEALTHCHECK`:** Python `grpc.channel_ready_future` against `localhost:${PORT:-8080}` (honours the default).
+- **Docker `HEALTHCHECK`:** exec form (no shell): Python `grpc.channel_ready_future` against `localhost:$PORT`, 8080 when `PORT` is unset or empty.
 - **Image size:** 184 MB uncompressed (`docker images`, local build of this branch on 2026-10-31, was 177 MB before `kafka-python`; the earlier ~41 MB figure was not re-measured and is probably the compressed registry size).
 - **Kafka client:** `kafka-python` 3.0.11 (pure Python, no dependencies). `confluent-kafka` was rejected because PyPI has no `musllinux` wheel for it (checked with `pip download --only-binary=:all: --platform musllinux_1_2_x86_64`; only `manylinux`), so it would need a source build against `librdkafka` on `python:3.12-alpine`. `kafka-python` 3.0.12 is newer but was released 2026-10-26, less than 7 days before the pin.
 - **Reproducibility:** the image installs from the fully pinned `requirements.txt` (compiled from `requirements.in` with `uv`), so transitive versions no longer float between builds. The lock was not regenerated in this change, so its transitive pins are older than what the unpinned build used to pull (e.g. `wrapt 1.17.3` instead of `2.5.1`).

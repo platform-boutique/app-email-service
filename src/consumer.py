@@ -163,6 +163,43 @@ class OrdersPlacedConsumer:
         self.processed = 0
         self.skipped = 0
         self.failed_attempts = 0
+        # Lag per (topic, partition), written by the consumer thread only (a whole new dict each time), read by the
+        # metrics export thread. KafkaConsumer itself is not thread safe, so the exporter never calls it.
+        self._lag: dict[tuple[str, int], int] = {}
+        self._outcomes = None
+
+    # -- metrics (OBS-20) --------------------------------------------------
+
+    def register_metrics(self, meter) -> None:
+        """kafka_consumer_lag{group,topic,partition} (records the group still has to read) and
+        email_events_processed_total{outcome} (stored, duplicate, skipped). Call once, before start()."""
+        from opentelemetry.metrics import Observation
+
+        def lag(_options):
+            for (topic, partition), value in self._lag.items():
+                yield Observation(value, {"group": self.group_id, "topic": topic, "partition": str(partition)})
+
+        meter.create_observable_gauge(
+            "kafka_consumer_lag", callbacks=[lag], description="Records the consumer group still has to read"
+        )
+        self._outcomes = meter.create_counter(
+            "email_events_processed_total", description="orders.placed records handled, by outcome"
+        )
+
+    def lag_snapshot(self) -> dict[tuple[str, int], int]:
+        return dict(self._lag)
+
+    def _refresh_lag(self, consumer) -> None:
+        """Lag = high watermark (as last reported by the broker in a fetch) - position, for the assigned partitions."""
+        try:
+            lag = {}
+            for tp in consumer.assignment():
+                end, position = consumer.highwater(tp), consumer.position(tp)
+                if end is not None and position is not None:
+                    lag[(tp.topic, tp.partition)] = max(end - position, 0)
+            self._lag = lag
+        except Exception as err:  # a hint for dashboards: it must never stop the consume loop
+            logger.debug(f"consumer lag not available ({type(err).__name__})")
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -258,6 +295,8 @@ class OrdersPlacedConsumer:
                     if self._wait(delay):
                         return False
             span.set_attribute("email.outcome", outcome)
+            if self._outcomes is not None:
+                self._outcomes.add(1, {"outcome": outcome})
             if outcome == SKIPPED:
                 self.skipped += 1
             else:
@@ -278,6 +317,7 @@ class OrdersPlacedConsumer:
                     if self._wait(1.0):
                         break
                     continue
+                self._refresh_lag(consumer)
                 if not batches and not topic_warned:
                     try:
                         if consumer.partitions_for_topic(self.topic) is None:
@@ -291,6 +331,7 @@ class OrdersPlacedConsumer:
                         if not self._process(consumer, record):
                             return
         finally:
+            self._lag = {}  # the partitions are given up: no stale series
             try:
                 consumer.close(autocommit=False)
             except Exception as err:

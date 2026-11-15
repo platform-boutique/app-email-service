@@ -69,7 +69,8 @@ USER 10001:10001
 
 EXPOSE 8080
 
+# Exec form (CODE-03): python runs the probe directly, no shell. PORT is read inside Python.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import grpc; ch=grpc.insecure_channel('localhost:${PORT:-8080}'); grpc.channel_ready_future(ch).result(timeout=3)" || exit 1
+    CMD ["python", "-c", "import os, grpc; ch=grpc.insecure_channel('localhost:' + (os.environ.get('PORT') or '8080')); grpc.channel_ready_future(ch).result(timeout=3)"]
 
 ENTRYPOINT ["python", "src/server.py"]

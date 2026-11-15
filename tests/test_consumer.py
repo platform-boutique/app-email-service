@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import namedtuple
 from types import SimpleNamespace
 
 import pytest
@@ -123,6 +124,11 @@ class TestHandle:
 # ---------------------------------------------------------------------------
 
 
+# Tests wait for what the consumer did by waiting on this condition (notified on every commit, close and idle poll),
+# never by sleeping for a guessed time. The timeout of wait_for is only the failsafe against a hung test.
+PROGRESS = threading.Condition()
+
+
 class FakeKafka:
     """Delivers the queued records one per poll, records commits and close()."""
 
@@ -132,7 +138,9 @@ class FakeKafka:
             for i, v in enumerate(values)
         ]
         self.commits, self.closed, self.subscribed = [], False, None
+        self.idle_polls = 0
         self._stop_after, self._stop_event = stop_after, stop_event
+        self._yield = threading.Event()  # never set: wait(0.01) only keeps an idle poll from spinning
 
     def subscribe(self, topics):
         self.subscribed = topics
@@ -143,17 +151,24 @@ class FakeKafka:
             if self._stop_after is not None and rec.offset == self._stop_after:
                 self._stop_event.set()  # SIGTERM arrives while this record is being handled
             return {("orders.placed", 0): [rec]}
-        time.sleep(0.01)
+        self._yield.wait(0.01)
+        with PROGRESS:
+            self.idle_polls += 1
+            PROGRESS.notify_all()
         return {}
 
     def partitions_for_topic(self, topic):
         return {0}
 
     def commit(self, offsets):
-        self.commits.append({tp.partition: m.offset for tp, m in offsets.items()})
+        with PROGRESS:
+            self.commits.append({tp.partition: m.offset for tp, m in offsets.items()})
+            PROGRESS.notify_all()
 
     def close(self, autocommit=True, timeout_ms=None):
-        self.closed = True
+        with PROGRESS:
+            self.closed = True
+            PROGRESS.notify_all()
 
 
 def make_consumer(store, fake, stop_event, **kw):
@@ -162,13 +177,13 @@ def make_consumer(store, fake, stop_event, **kw):
     )
 
 
-def run_until(consumer, condition, timeout=30):
+def run_until(consumer, condition, timeout=60):
+    """Start the consumer, wait until `condition()` holds (re-checked on every PROGRESS notification), stop it."""
     consumer.start()
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and not condition():
-        time.sleep(0.02)
+    with PROGRESS:
+        PROGRESS.wait_for(condition, timeout)
     consumer.stop_event.set()
-    assert consumer.join(10), "consumer thread did not stop"
+    assert consumer.join(30), "consumer thread did not stop"
 
 
 def test_commits_the_next_offset_after_each_stored_message(store):
@@ -219,19 +234,20 @@ def test_stop_while_the_database_is_down_returns_quickly_without_commit_or_skip(
     stop = threading.Event()
     fake = FakeKafka([event_bytes("A")])
 
+    failed = threading.Event()
+
     def down(*args):
+        failed.set()
         raise sqlite3.OperationalError("disk I/O error")
 
     store.add = down
     c = OrdersPlacedConsumer(
-        ["x:1"], "g", store, stop, consumer_factory=lambda: fake, backoff_initial=30, backoff_max=30
+        ["x:1"], "g", store, stop, consumer_factory=lambda: fake, backoff_initial=3600, backoff_max=3600
     )
     c.start()
-    time.sleep(0.3)
-    started = time.monotonic()
+    assert failed.wait(60)  # the consumer is at (or about to enter) its retry wait
     stop.set()
-    assert c.join(5)
-    assert time.monotonic() - started < 2  # the 30 s backoff does not delay the shutdown
+    assert c.join(30)  # a one hour backoff does not delay the shutdown: it wakes on the stop event
     assert fake.commits == [] and fake.closed  # never committed: redelivered at the next start
 
 
@@ -268,14 +284,19 @@ def test_broker_not_there_yet_is_waited_for(store, caplog):
 def test_stop_while_the_broker_is_missing_returns_quickly(store):
     stop = threading.Event()
 
+    tried = threading.Event()
+
     def factory():
+        tried.set()
         raise OSError("no brokers available")
 
-    c = OrdersPlacedConsumer(["x:1"], "g", store, stop, consumer_factory=factory, backoff_initial=30, backoff_max=30)
+    c = OrdersPlacedConsumer(
+        ["x:1"], "g", store, stop, consumer_factory=factory, backoff_initial=3600, backoff_max=3600
+    )
     c.start()
-    time.sleep(0.2)
+    assert tried.wait(60)
     stop.set()
-    assert c.join(3)
+    assert c.join(30)  # the one hour backoff wakes on the stop event
 
 
 def test_missing_topic_is_logged_at_info_once(store, caplog):
@@ -285,9 +306,10 @@ def test_missing_topic_is_logged_at_info_once(store, caplog):
     c = make_consumer(store, fake, stop)
     with caplog.at_level(logging.INFO, logger="email-service"):
         c.start()
-        time.sleep(0.3)
+        with PROGRESS:
+            PROGRESS.wait_for(lambda: fake.idle_polls >= 5, 60)  # several empty polls after the first warning
         stop.set()
-        assert c.join(5)
+        assert c.join(30)
     msgs = [r.getMessage() for r in caplog.records if "does not exist yet" in r.getMessage()]
     assert len(msgs) == 1
 
@@ -295,6 +317,37 @@ def test_missing_topic_is_logged_at_info_once(store, caplog):
 # ---------------------------------------------------------------------------
 # real process: Kafka configured but unreachable
 # ---------------------------------------------------------------------------
+
+
+class LogTail:
+    """Reads a process's stdout on a thread, keeps the lines, and lets a test wait for a message by event."""
+
+    def __init__(self, stream):
+        self.lines = []
+        self._waiters = []  # (text, Event)
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._read, args=(stream,), daemon=True)
+        self._thread.start()
+
+    def _read(self, stream):
+        for line in stream:
+            with self._lock:
+                self.lines.append(line)
+                for text, event in self._waiters:
+                    if text in line:
+                        event.set()
+
+    def wait_for(self, text, timeout=120):
+        event = threading.Event()
+        with self._lock:
+            if any(text in line for line in self.lines):
+                return True
+            self._waiters.append((text, event))
+        return event.wait(timeout)
+
+    def finish(self, timeout=60):
+        self._thread.join(timeout)
+        return list(self.lines)
 
 
 def test_kafka_down_keeps_health_serving_and_sigterm_exits_0_quickly(app_dir, tmp_path):  # noqa: F811
@@ -315,22 +368,26 @@ def test_kafka_down_keeps_health_serving_and_sigterm_exits_0_quickly(app_dir, tm
         stderr=subprocess.PIPE,
         text=True,
     )
+    tail = LogTail(proc.stdout)
     try:
         with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
-            grpc.channel_ready_future(channel).result(timeout=30)
-            time.sleep(3)  # the consumer is in its connect/backoff loop by now
-            health = health_pb2_grpc.HealthStub(channel).Check(health_pb2.HealthCheckRequest(), timeout=5)
+            grpc.channel_ready_future(channel).result(timeout=120)
+            # the consumer is in its connect/backoff loop once it says so (no guessing with a sleep)
+            assert tail.wait_for("not reachable yet"), "the consumer never reported the missing broker"
+            health = health_pb2_grpc.HealthStub(channel).Check(health_pb2.HealthCheckRequest(), timeout=30)
             assert health.status == health_pb2.HealthCheckResponse.SERVING
         proc.send_signal(signal.SIGTERM)
         started = time.monotonic()
-        stdout, stderr = proc.communicate(timeout=15)
+        proc.wait(timeout=30)
         elapsed = time.monotonic() - started
+        stdout = "".join(tail.finish())
+        stderr = proc.stderr.read()
     finally:
         if proc.poll() is None:
             proc.kill()
-            proc.communicate()
+            proc.wait()
     assert proc.returncode == 0, stderr
-    assert elapsed < 5
+    assert elapsed < 10  # CODE-04: exit within 10 s of SIGTERM even though the broker is gone
     records = [json.loads(line) for line in stdout.splitlines()]  # all JSON, kafka client noise included
     messages = [r["message"] for r in records]
     assert any("not reachable yet" in m for m in messages)
@@ -351,3 +408,98 @@ def test_repeat_filter_lets_an_identical_message_through_once_per_window():
     assert flt.filter(rec("Topic y not found")) is True  # another message
     now[0] += 61
     assert flt.filter(rec("Topic x not found")) is True  # window over
+
+
+# ---------------------------------------------------------------------------
+# metrics: consumer lag and events by outcome (OBS-20)
+# ---------------------------------------------------------------------------
+
+
+TopicPartition = namedtuple("TopicPartition", "topic partition")
+
+
+class LagKafka(FakeKafka):
+    """A FakeKafka that also answers assignment/highwater/position like the real client (one partition)."""
+
+    def __init__(self, values, end_offset):
+        super().__init__(values)
+        self.end_offset = end_offset
+
+    def assignment(self):
+        return {TopicPartition("orders.placed", 0)}
+
+    def highwater(self, tp):
+        return self.end_offset
+
+    def position(self, tp):
+        return self.commits[-1][0] if self.commits else 0  # the committed offset is the next one to read
+
+
+def _meter():
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    return provider, reader, provider.get_meter("test")
+
+
+def _points(reader, name):
+    out = []
+    data = reader.get_metrics_data()  # None while nothing has been recorded
+    for resource_metrics in data.resource_metrics if data else []:
+        for scope in resource_metrics.scope_metrics:
+            for metric in scope.metrics:
+                if metric.name == name:
+                    out += [(dict(p.attributes), p.value) for p in metric.data.data_points]
+    return out
+
+
+def test_lag_is_highwater_minus_position_and_goes_away_with_the_consumer(store):
+    stop = threading.Event()
+    fake = LagKafka([], end_offset=7)  # 7 records on the broker, none read yet
+    c = make_consumer(store, fake, stop)
+    provider, reader, meter = _meter()
+    c.register_metrics(meter)
+    c.start()
+    with PROGRESS:
+        PROGRESS.wait_for(lambda: fake.idle_polls >= 2, 60)  # the lag was refreshed after a poll
+    assert c.lag_snapshot() == {("orders.placed", 0): 7}
+    assert _points(reader, "kafka_consumer_lag") == [({"group": "g", "topic": "orders.placed", "partition": "0"}, 7)]
+    stop.set()
+    assert c.join(30)
+    assert c.lag_snapshot() == {} and _points(reader, "kafka_consumer_lag") == []  # no stale series after stop
+    provider.shutdown()
+
+
+def test_lag_shrinks_as_records_are_committed(store):
+    stop = threading.Event()
+    fake = LagKafka([event_bytes("A"), event_bytes("B")], end_offset=2)
+    c = make_consumer(store, fake, stop)
+    c.start()
+    with PROGRESS:
+        PROGRESS.wait_for(lambda: len(fake.commits) == 2 and fake.idle_polls >= 2, 60)
+    snapshot = c.lag_snapshot()
+    stop.set()
+    assert c.join(30)
+    assert snapshot == {("orders.placed", 0): 0}
+
+
+def test_lag_of_a_client_that_cannot_tell_is_left_out_and_does_not_stop_the_loop(store):
+    stop = threading.Event()
+    fake = FakeKafka([event_bytes("A")])  # no assignment(): AttributeError inside the refresh
+    c = make_consumer(store, fake, stop)
+    run_until(c, lambda: fake.commits)
+    assert c.lag_snapshot() == {} and store.count() == 1
+
+
+def test_events_are_counted_by_outcome(store):
+    stop = threading.Event()
+    fake = FakeKafka([event_bytes("A"), event_bytes("A"), b"garbage"])  # stored, duplicate, skipped
+    c = make_consumer(store, fake, stop)
+    provider, reader, meter = _meter()
+    c.register_metrics(meter)
+    run_until(c, lambda: len(fake.commits) == 3)
+    counted = {attrs["outcome"]: value for attrs, value in _points(reader, "email_events_processed_total")}
+    assert counted == {"stored": 1, "duplicate": 1, "skipped": 1}
+    provider.shutdown()

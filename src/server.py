@@ -26,13 +26,14 @@ logsetup.install_excepthooks(logger)
 
 import grpc  # noqa: E402
 from grpc_health.v1 import health_pb2, health_pb2_grpc  # noqa: E402
+from grpc_reflection.v1alpha import reflection  # noqa: E402
 from jinja2 import TemplateError  # noqa: E402
 
 # Imported after the logger exists: these modules log through it. Importing telemetry (directly or through
 # mailbox_service) patches grpc.server before create_server() runs.
 import telemetry  # noqa: E402
 from consumer import OrdersPlacedConsumer, RepeatFilter  # noqa: E402
-from generated import email_pb2, email_pb2_grpc, mailbox_pb2_grpc  # noqa: E402
+from generated import email_pb2, email_pb2_grpc, mailbox_pb2, mailbox_pb2_grpc  # noqa: E402
 from mailbox_service import MailboxServicer  # noqa: E402
 from mailbox_store import MailboxStore  # noqa: E402
 from rendering import render_html  # noqa: E402
@@ -140,7 +141,19 @@ def create_server(store: MailboxStore) -> grpc.Server:
     email_pb2_grpc.add_EmailServiceServicer_to_server(EmailServiceServicer(), server)
     mailbox_pb2_grpc.add_MailboxServiceServicer_to_server(MailboxServicer(store), server)
     health_pb2_grpc.add_HealthServicer_to_server(HealthServicer(), server)
+    enable_reflection(server)
     return server
+
+
+def enable_reflection(server) -> None:
+    """gRPC server reflection (CODE-02), so grpcurl works without the .proto files."""
+    names = (
+        email_pb2.DESCRIPTOR.services_by_name["EmailService"].full_name,
+        mailbox_pb2.DESCRIPTOR.services_by_name["MailboxService"].full_name,
+        health_pb2.DESCRIPTOR.services_by_name["Health"].full_name,
+        reflection.SERVICE_NAME,
+    )
+    reflection.enable_server_reflection(names, server)
 
 
 def kafka_brokers(environ=os.environ) -> list[str]:
@@ -188,6 +201,7 @@ def main() -> int:
     if brokers:
         group = os.environ.get("KAFKA_CONSUMER_GROUP") or "email-service"
         consumer = OrdersPlacedConsumer(brokers, group, store, stop_event)
+        consumer.register_metrics(telemetry.meter)
         consumer.start()
         logger.info(f"consuming orders.placed from {','.join(brokers)} as group {group}")
     else:

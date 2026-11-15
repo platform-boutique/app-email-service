@@ -6,9 +6,12 @@ grpcio==1.85.1
     # via
     #   -r requirements.in
     #   grpcio-health-checking
+    #   grpcio-reflection
     #   grpcio-tools
     #   opentelemetry-exporter-otlp-proto-grpc
 grpcio-health-checking==1.81.1
+    # via -r requirements.in
+grpcio-reflection==1.81.1
     # via -r requirements.in
 grpcio-tools==1.81.1
     # via -r requirements.in
@@ -56,6 +59,7 @@ protobuf==6.33.6
     # via
     #   googleapis-common-protos
     #   grpcio-health-checking
+    #   grpcio-reflection
     #   grpcio-tools
     #   opentelemetry-proto
 pyroscope-io==1.4.0

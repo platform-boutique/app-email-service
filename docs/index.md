@@ -38,12 +38,12 @@ flowchart LR
 | **Language / runtime** | Python 3.12 in the image (3.13 pinned for local dev), `grpcio`, Jinja2, `kafka-python` (pure Python), stdlib `sqlite3` |
 | **Image** | `mladenovskistefan/email-service` |
 | **Protocol / port** | gRPC (HTTP/2, plaintext) on `8080` |
-| **Metrics** | Pushed over OTLP/gRPC to Alloy → Mimir every 15 s (no scrape endpoint). Dashboard names: `rpc_server_duration_seconds_{bucket,count,sum}`, `rpc_server_requests_total`, `rpc_server_active_requests` |
+| **Metrics** | Pushed over OTLP/gRPC to Alloy → Mimir every 15 s (no scrape endpoint). Dashboard names: `rpc_server_duration_seconds_{bucket,count,sum}`, `rpc_server_requests_total`, `rpc_server_active_requests`, `build_info`, `python_*` runtime metrics |
 | **Health** | `grpc.health.v1.Health/Check` on `8080` — static `SERVING` |
 | **State** | SQLite mailbox file `MAILBOX_DB` (default `/data/mailbox.db`, WAL; a volume in compose). Empty and unused while Kafka is off |
 | **Depends on** | Optional: Kafka (`KAFKA_BROKERS`, topic `orders.placed`), OTLP collector, Pyroscope. The service starts, answers and stays healthy without any of them |
 | **Called by** | `checkout-service` (`SendOrderConfirmation`, only while Kafka is off), `frontend` (`MailboxService`). Consumes `orders.placed` (published by checkout) |
-| **gRPC reflection** | Not enabled (as before; the contract's "reflection as today" means none) — pass `-proto` to `grpcurl` |
+| **gRPC reflection** | Enabled (`grpcio-reflection`, v1alpha) for `EmailService`, `MailboxService` and `Health`: `grpcurl -plaintext localhost:8080 list` works without the proto files |
 
 ## Find it elsewhere
 
