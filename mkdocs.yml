@@ -6,13 +6,18 @@ repo_url: https://github.com/platform-boutique/app-email-service
 edit_uri: edit/main/docs/
 nav:
   - Overview: index.md
+  - Architecture: architecture.md
   - API: api.md
   - Configuration: configuration.md
   - Container image: container-image.md
   - Kubernetes: kubernetes.md
   - Observability: observability.md
+  - Operations: operations.md
   - Develop & test: development.md
   - Known limitations: limitations.md
+  - Decisions:
+      - "1. SQLite mailbox": adr/0001-sqlite-mailbox.md
+      - "2. Commit after store, idempotent by event_id": adr/0002-commit-after-store-idempotent-by-event-id.md
 theme:
   name: material
   features:

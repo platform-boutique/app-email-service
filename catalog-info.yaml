@@ -15,7 +15,7 @@ metadata:
     grafana/dashboard-selector: "tags @> 'email'"
     grafana/alert-label-selector: "service=email-service"
     grafana/overview-dashboard: "https://grafana.platform-demo.click/d/email-service-overview"
-  tags: [python, grpc]
+  tags: [python, grpc, kafka]
   links:
     - { url: "https://argocd.platform-demo.click/applications/argocd/dev-email-service", title: Argo CD, icon: dashboard }
     - { url: "https://grafana.platform-demo.click/d/email-service-overview", title: Grafana dashboard, icon: dashboard }
@@ -24,7 +24,9 @@ spec:
   lifecycle: experimental
   owner: group:default/maintainers
   system: shop
-  providesApis: [email-service-api]
+  providesApis: [email-service-api, email-mailbox-api]
+  dependsOn:
+    - resource:default/kafka
 ---
 apiVersion: backstage.io/v1alpha1
 kind: API
@@ -41,3 +43,19 @@ spec:
   system: shop
   definition:
     $text: ./proto/email.proto
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: email-mailbox-api
+  description: gRPC interface of the mailbox of email-service (hipstershop.mailbox.MailboxService, Protocol Buffers).
+  tags: [grpc, protobuf]
+  links:
+    - { url: "https://github.com/platform-boutique/app-email-service/blob/main/proto/mailbox.proto", title: "mailbox.proto on GitHub", icon: code }
+spec:
+  type: grpc
+  lifecycle: experimental
+  owner: group:default/maintainers
+  system: shop
+  definition:
+    $text: ./proto/mailbox.proto

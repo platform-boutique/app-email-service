@@ -147,7 +147,7 @@ livenessProbe:
 securityContext:
   runAsNonRoot: true
   runAsUser: 10001
-  runAsGroup: 101
+  runAsGroup: 10001
   allowPrivilegeEscalation: false
   capabilities: { drop: ["ALL"] }
   readOnlyRootFilesystem: true   # verified in-cluster before the mailbox existed; with Kafka on, /data must be a writable volume (not yet in the chart)
@@ -240,6 +240,24 @@ grpcurl -plaintext -proto proto/mailbox.proto -d '{"order_ids": ["ord-123"]}' lo
 grpcurl -plaintext -proto proto/mailbox.proto -d '{"email_id": "<id from the list>", "order_id": "ord-123"}' localhost:8080 hipstershop.mailbox.MailboxService/GetOrderEmail
 ```
 
+## Develop
+
+Requirements: Python 3.12 (what the image runs) or 3.13 (`.python-version`), [uv](https://github.com/astral-sh/uv) for the virtualenv, Docker for the image and the Kafka integration test, Python 3.12 for the docs check. The commands below are the ones the shared pipeline (`platform-demo-workflows`, `service-ci-python`) runs, so a failure can be reproduced without pushing. Setup: `uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt` (the venv for the table below was made outside the repository). `Running locally` above has the run commands.
+
+| Step | Command | Result on 2026-11-21 |
+|---|---|---|
+| Format and lint | `ruff format --check . && ruff check .` (the shared pipeline installs ruff with the version it pins) | run (ruff 0.17.2 from a separate venv): all checks passed, 38 files already formatted |
+| Unit tests | `pytest` (`pytest.ini` sets `pythonpath=src`; the tests compile the protos into a temp dir, so no generated stubs are needed) | run: 220 passed, 6 skipped (the Kafka integration tests) |
+| Kafka integration tests | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` (starts and removes its own `apache/kafka:4.3.2` container on 127.0.0.1:19093) | not run today (earlier results are in Verification status) |
+| Proto stubs | the `grpc_tools.protoc` command and the two `sed` lines in Running locally (what the Dockerfile does) | not run for this table (the test suite compiles them itself) |
+| Security scan | `bandit -r src/ -c pyproject.toml` | run (bandit 1.9.4 from a separate venv): exit 0, no issues |
+| Dependency audit | `pip-audit -r requirements.txt` | run: no known vulnerabilities found |
+| Image | `docker build -t platform-demo/email-service:local .` | not run today |
+| Image scan | `trivy image --severity CRITICAL,HIGH --exit-code 1 platform-demo/email-service:local` | not run today |
+| Secret scan | `pre-commit run --all-files` (`.pre-commit-config.yaml`, gitleaks) or `gitleaks git --redact` | run with the gitleaks binary of the pre-commit cache (`gitleaks git --redact`, full history, 67 commits): no leaks found |
+| Workflow lint | `actionlint` | run (actionlint 1.7.12), no findings |
+| Docs | `mkdocs build --strict` (mkdocs 1.6.1 + mkdocs-techdocs-core 1.7.1, Python 3.12 venv) and the link check `python3 -I tools/check-md-links.py .` from `platform-demo-workflows` (relative links in `README.md` and `docs/`) | run, both passed |
+
 ## Project structure
 
 ```
@@ -261,7 +279,7 @@ grpcurl -plaintext -proto proto/mailbox.proto -d '{"email_id": "<id from the lis
 ├── requirements.in / requirements.txt / requirements-dev.txt
 ├── pyproject.toml / pytest.ini / .python-version / .trivyignore
 ├── Dockerfile / .dockerignore
-└── docs/                # empty placeholder
+└── docs/                # TechDocs pages (mkdocs.yml in the root), docs/adr/ = decisions
 ```
 
 ## Verification status (what was run, what was not)

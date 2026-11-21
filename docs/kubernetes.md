@@ -30,8 +30,8 @@ livenessProbe:
 ```yaml
 securityContext:
   runAsNonRoot: true
-  runAsUser: 100
-  runAsGroup: 101
+  runAsUser: 10001
+  runAsGroup: 10001
   allowPrivilegeEscalation: false
   capabilities: { drop: ["ALL"] }
   readOnlyRootFilesystem: true   # verified in-cluster before the mailbox existed; with Kafka on, /data must be a writable volume (not yet in the chart)

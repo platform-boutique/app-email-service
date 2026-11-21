@@ -22,6 +22,8 @@ With `KAFKA_BROKERS` empty (the default) the service behaves as before; the mail
 
 Called by `checkout-service` (direct path) and `frontend` (mailbox); consumes the Kafka topic `orders.placed`. It calls no other service.
 
+Pages: [architecture](architecture.md), [API](api.md), [configuration](configuration.md), [observability](observability.md), [operations](operations.md), [development](development.md), [decisions](adr/0001-sqlite-mailbox.md).
+
 ```mermaid
 flowchart LR
   email_service["<b>email-service</b><br/>8080 (gRPC)"]:::me
