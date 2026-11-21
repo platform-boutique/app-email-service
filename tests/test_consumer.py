@@ -22,6 +22,7 @@ from consumer import (
     TransientError,
     handle_message,
     parse_event,
+    topic_name,
 )
 from tests.conftest import event_bytes, make_event
 from tests.test_lifecycle import _clean_env, _free_port, app_dir  # noqa: F401  (app_dir is a fixture)
@@ -503,3 +504,86 @@ def test_events_are_counted_by_outcome(store):
     counted = {attrs["outcome"]: value for attrs, value in _points(reader, "email_events_processed_total")}
     assert counted == {"stored": 1, "duplicate": 1, "skipped": 1}
     provider.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# KAFKA_TOPIC_PREFIX (FUT-03): the same name checkout-service publishes to and order-service consumes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "prefix, want",
+    [
+        (None, "orders.placed"),
+        ("", "orders.placed"),
+        ("   ", "orders.placed"),
+        ("dev.", "dev.orders.placed"),
+        (" dev. ", "dev.orders.placed"),
+        ("stage_1-.", "stage_1-.orders.placed"),
+    ],
+)
+def test_topic_name(prefix, want):
+    assert topic_name(prefix) == want
+
+
+@pytest.mark.parametrize("prefix", ["dev/x", "de v", "dev:", "\u00fc", "a" * 240])
+def test_topic_name_rejects_a_prefix_kafka_cannot_have(prefix):
+    with pytest.raises(ValueError, match="KAFKA_TOPIC_PREFIX"):
+        topic_name(prefix)
+
+
+def test_topic_name_longest_allowed_prefix():
+    assert len(topic_name("a" * (249 - len("orders.placed")))) == 249
+
+
+def test_consumer_subscribes_to_the_given_topic(store):
+    stop, fake = threading.Event(), FakeKafka([])
+    c = make_consumer(store, fake, stop, topic=topic_name("dev."))
+    run_until(c, lambda: fake.subscribed is not None)
+    assert fake.subscribed == ["dev.orders.placed"]
+    assert make_consumer(store, FakeKafka([]), threading.Event()).topic == "orders.placed"  # default unchanged
+
+
+def _start_server(app_dir, tmp_path, **env):  # noqa: F811
+    return subprocess.Popen(
+        [sys.executable, "src/server.py"],
+        cwd=app_dir,
+        env=_clean_env(
+            PORT=str(_free_port()),
+            PYTHONUNBUFFERED="1",
+            KAFKA_BROKERS=f"127.0.0.1:{_free_port()}",  # nothing listens there
+            MAILBOX_DB=str(tmp_path / "mailbox.db"),
+            **env,
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def test_invalid_topic_prefix_stops_the_start_with_a_json_error(app_dir, tmp_path):  # noqa: F811
+    proc = _start_server(app_dir, tmp_path, KAFKA_TOPIC_PREFIX="dev/x")
+    try:
+        stdout, stderr = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert proc.returncode == 1, stderr
+    records = [json.loads(line) for line in stdout.splitlines()]
+    assert records and records[-1]["severity"] == "error" and "KAFKA_TOPIC_PREFIX" in records[-1]["error"]
+
+
+def test_topic_prefix_is_used_by_the_started_consumer(app_dir, tmp_path):  # noqa: F811
+    proc = _start_server(app_dir, tmp_path, KAFKA_TOPIC_PREFIX="dev.")
+    tail = LogTail(proc.stdout)
+    try:
+        assert tail.wait_for("consuming dev.orders.placed from"), "".join(tail.lines)
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()

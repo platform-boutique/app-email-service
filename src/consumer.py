@@ -13,6 +13,7 @@ its own, so a slow message does not cost the group membership.
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -27,6 +28,23 @@ from rendering import EventError, order_view_from_event, render_html, render_tex
 logger = logging.getLogger("email-service")
 
 TOPIC = "orders.placed"
+_TOPIC_PREFIX_CHARS = re.compile(r"[a-zA-Z0-9._-]*")
+_MAX_TOPIC_LEN = 249  # Kafka's limit for a topic name
+
+
+def topic_name(prefix: str | None) -> str:
+    """The topic to consume: KAFKA_TOPIC_PREFIX (surrounding blanks ignored, empty or unset = none) in front of
+    "orders.placed", so several environments can share one Kafka cluster (FUT-03). checkout-service and order-service
+    build the same name from the same variable. A prefix that cannot be part of a Kafka topic name is a ValueError
+    (checked at start: a typo is one log line, not a consumer that waits for a topic nobody publishes)."""
+    prefix = (prefix or "").strip()
+    if not _TOPIC_PREFIX_CHARS.fullmatch(prefix):
+        raise ValueError(f"KAFKA_TOPIC_PREFIX {prefix!r}: only letters, digits, '.', '_' and '-' are allowed")
+    if len(prefix) + len(TOPIC) > _MAX_TOPIC_LEN:
+        raise ValueError(f"KAFKA_TOPIC_PREFIX is too long: the topic name may have at most {_MAX_TOPIC_LEN} characters")
+    return prefix + TOPIC
+
+
 EVENT_TYPE = "order.placed"
 SUPPORTED_SCHEMA_VERSION = 1
 
