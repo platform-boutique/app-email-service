@@ -1,8 +1,9 @@
-# Local secret blocking. One-time setup per clone:  pipx install pre-commit && pre-commit install
-# - every commit: gitleaks scans the staged changes, plus private-key / large-file checks
-# - every push:   gitleaks scans the commits being pushed before anything leaves the machine
-# This is a fast local guard (git push --no-verify skips it); GitHub push protection and the
-# CI secret scan are the enforcing layers.
+# Local guard that runs the same checks as CI. One-time setup per clone:  pipx install pre-commit && pre-commit install
+# - every commit: gitleaks scans the staged changes, private-key / large-file checks, ruff check and ruff format
+# - every push:   gitleaks scans the commits being pushed
+# Format and lint use the same tools and pinned versions as the shared CI workflow (platform-demo-workflows), so a clean
+# local run means the `Lint & Format` job passes. This is a fast local guard (git push --no-verify skips it); the CI jobs,
+# GitHub push protection and the CI secret scan are the enforcing layers.
 default_install_hook_types: [pre-commit, pre-push]
 
 repos:
@@ -18,6 +19,16 @@ repos:
     rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # frozen: v8.30.1
     hooks:
       - id: gitleaks
+        stages: [pre-commit]
+
+  # Same ruff release as CI (platform-demo-workflows python-ci.yaml, `ruff-version`); settings come from pyproject.toml.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 44b5042edab9382aba712eed4f9c7bab7a3d6a3e # frozen: v0.17.0
+    hooks:
+      - id: ruff-check
+        stages: [pre-commit]
+      - id: ruff-format
+        types_or: [python, pyi]
         stages: [pre-commit]
 
   - repo: local
