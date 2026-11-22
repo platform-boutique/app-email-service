@@ -32,7 +32,7 @@ from jinja2 import TemplateError  # noqa: E402
 # Imported after the logger exists: these modules log through it. Importing telemetry (directly or through
 # mailbox_service) patches grpc.server before create_server() runs.
 import telemetry  # noqa: E402
-from consumer import OrdersPlacedConsumer, RepeatFilter  # noqa: E402
+from consumer import OrdersPlacedConsumer, RepeatFilter, topic_name  # noqa: E402
 from generated import email_pb2, email_pb2_grpc, mailbox_pb2, mailbox_pb2_grpc  # noqa: E402
 from mailbox_service import MailboxServicer  # noqa: E402
 from mailbox_store import MailboxStore  # noqa: E402
@@ -179,6 +179,13 @@ def open_store(path: str, kafka_on: bool) -> MailboxStore:
 def main() -> int:
     port = os.environ.get("PORT", "8080")
     brokers = kafka_brokers()
+    topic = None
+    if brokers:
+        try:
+            topic = topic_name(os.environ.get("KAFKA_TOPIC_PREFIX"))
+        except ValueError as err:
+            logger.error("invalid configuration", extra={"error": str(err)})
+            return 1
     stop_event = threading.Event()
     install_signal_handlers(stop_event)
 
@@ -200,10 +207,10 @@ def main() -> int:
     consumer = None
     if brokers:
         group = os.environ.get("KAFKA_CONSUMER_GROUP") or "email-service"
-        consumer = OrdersPlacedConsumer(brokers, group, store, stop_event)
+        consumer = OrdersPlacedConsumer(brokers, group, store, stop_event, topic=topic)
         consumer.register_metrics(telemetry.meter)
         consumer.start()
-        logger.info(f"consuming orders.placed from {','.join(brokers)} as group {group}")
+        logger.info(f"consuming {topic} from {','.join(brokers)} as group {group}")
     else:
         logger.info("KAFKA_BROKERS is empty: the orders.placed consumer is off")
 
