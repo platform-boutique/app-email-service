@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM python:3.12-alpine AS builder
+FROM python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -25,7 +25,7 @@ RUN mkdir -p generated \
     && sed -i 's/^import mailbox_pb2 as mailbox__pb2/from . import mailbox_pb2 as mailbox__pb2/' generated/mailbox_pb2_grpc.py
 
 # ---- Runtime stage ----
-FROM python:3.12-alpine AS runtime
+FROM python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS runtime
 
 ARG SERVICE_VERSION=dev
 ARG SERVICE_COMMIT=unknown
