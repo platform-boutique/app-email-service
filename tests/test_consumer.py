@@ -506,6 +506,15 @@ def test_events_are_counted_by_outcome(store):
     provider.shutdown()
 
 
+def test_outcome_series_start_at_zero(store):
+    c = make_consumer(store, FakeKafka([]), threading.Event())
+    provider, reader, meter = _meter()
+    c.register_metrics(meter)
+    counted = {attrs["outcome"]: value for attrs, value in _points(reader, "email_events_processed_total")}
+    assert counted == {"stored": 0, "duplicate": 0, "skipped": 0}
+    provider.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # KAFKA_TOPIC_PREFIX (FUT-03): the same name checkout-service publishes to and order-service consumes
 # ---------------------------------------------------------------------------
