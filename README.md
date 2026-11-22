@@ -65,7 +65,7 @@ Active only when `KAFKA_BROKERS` is non-empty. Event format: a JSON object with 
 | Topic does not exist yet | `info` log once, waits; the topic is picked up at the next metadata refresh (`metadata_max_age_ms` = 30 s) |
 | `SIGTERM` | The current message is finished and committed, the consumer leaves the group and closes, the process exits `0` (see shutdown below) |
 
-Neither the consumer nor the gRPC path logs the recipient or the address (the gRPC path logs `order=<id>`). The Kafka client's own log lines go through the same JSON format, identical lines are rate limited to one per minute. There is no lag/processed/failed counter: this service has no `/metrics` (metrics are OTLP-pushed RPC metrics only); the counts are logs.
+Neither the consumer nor the gRPC path logs the recipient or the address (the gRPC path logs `order=<id>`). The Kafka client's own log lines go through the same JSON format, identical lines are rate limited to one per minute. Counts are also metrics, pushed over OTLP like the RPC metrics (this service has no `/metrics`): `email_events_processed_total{outcome}` (`stored`, `duplicate`, `skipped`; all three start at 0) and `kafka_consumer_lag`, see Observability. Records that fail and are retried are not counted (they are `error` log lines).
 
 ## Configuration
 
@@ -75,6 +75,9 @@ Neither the consumer nor the gRPC path logs the recipient or the address (the gR
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (telemetry off) | OTLP/**gRPC** endpoint for **traces, metrics and logs**: an absolute `http(s)://host:port` URL, e.g. `http://alloy.monitoring.svc.cluster.local:4317`. Telemetry is on only when this is a valid URL; empty or malformed means off (never a crash). The old `COLLECTOR_SERVICE_ADDR` and `ENABLE_TRACING` are no longer read |
 | `OTEL_SDK_DISABLED` | — | `true` (trimmed, any case) forces everything off: telemetry and profiling, even with an endpoint set |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `15000` | Milliseconds between metric pushes |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (fixed) | Not read: the exporters are the OTLP/gRPC ones, built in code (`http/protobuf` is not supported). Listed because the standard names it |
+| `OTEL_RESOURCE_ATTRIBUTES` | — | Extra resource attributes (`key=value,key=value`), read by the OpenTelemetry SDK and added to every signal. The service's own attributes (`service.name`, `service.version`, `service.namespace`, `deployment.environment`, `service.instance.id`) win over the same keys here (checked 2026-11-22) |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | SDK default (`parentbased_always_on`) | Read by the OpenTelemetry SDK, e.g. `parentbased_traceidratio` with `0.1` (checked 2026-11-22) |
 | `OTEL_SERVICE_NAME` | `email-service` | `service.name` — becomes the Prometheus `job` and the Loki `service_name`; keep the default, dashboards depend on it |
 | `SERVICE_VERSION` | `dev` | `service.version` resource attribute, the `version` log field and the Pyroscope `version` tag |
 | `SERVICE_COMMIT` | `unknown` | Commit id, logged once at start (`message: "starting"`); set it at deploy time |
@@ -108,7 +111,7 @@ Multi-stage [`Dockerfile`](Dockerfile):
 - **User:** numeric `USER 10001:10001` (`appuser`/`appgroup`, created with these fixed ids; `id` in the container prints `uid=10001(appuser) gid=10001(appgroup)`). Build args `SERVICE_VERSION` (default `dev`) and `SERVICE_COMMIT` (default `unknown`) set the OCI labels `version`/`revision` (plus `source`, `licenses=Apache-2.0`) and the ENV of the same names.
 - **EXPOSE:** `8080` only.
 - **Docker `HEALTHCHECK`:** exec form (no shell): Python `grpc.channel_ready_future` against `localhost:$PORT`, 8080 when `PORT` is unset or empty.
-- **Image size:** 184 MB uncompressed (`docker images`, local build of this branch on 2026-10-31, was 177 MB before `kafka-python`; the earlier ~41 MB figure was not re-measured and is probably the compressed registry size).
+- **Image size:** 188 MB uncompressed (`docker images`, local build on 2026-11-22; it was 177 MB before `kafka-python` was added; the earlier ~41 MB figure was not re-measured and is probably the compressed registry size).
 - **Kafka client:** `kafka-python` 3.0.11 (pure Python, no dependencies). `confluent-kafka` was rejected because PyPI has no `musllinux` wheel for it (checked with `pip download --only-binary=:all: --platform musllinux_1_2_x86_64`; only `manylinux`), so it would need a source build against `librdkafka` on `python:3.12-alpine`. `kafka-python` 3.0.12 is newer but was released 2026-10-26, less than 7 days before the pin.
 - **Reproducibility:** the image installs from the fully pinned `requirements.txt` (compiled from `requirements.in` with `uv`), so transitive versions no longer float between builds. The lock was not regenerated in this change, so its transitive pins are older than what the unpinned build used to pull (e.g. `wrapt 1.17.3` instead of `2.5.1`).
 - **Build context:** [`.dockerignore`](.dockerignore) keeps `.git`, tests, docs, caches and locally compiled stubs out of the context.
@@ -245,19 +248,20 @@ grpcurl -plaintext -proto proto/mailbox.proto -d '{"email_id": "<id from the lis
 
 Requirements: Python 3.12 (what the image runs) or 3.13 (`.python-version`), [uv](https://github.com/astral-sh/uv) for the virtualenv, Docker for the image and the Kafka integration test, Python 3.12 for the docs check. The commands below are the ones the shared pipeline (`platform-demo-workflows`, `service-ci-python`) runs, so a failure can be reproduced without pushing. Setup: `uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt` (the venv for the table below was made outside the repository). `Running locally` above has the run commands.
 
-| Step | Command | Result on 2026-11-21 |
+| Step | Command | Result on 2026-11-22 |
 |---|---|---|
-| Format and lint | `ruff format --check . && ruff check .` (the shared pipeline installs ruff with the version it pins) | run (ruff 0.17.2 from a separate venv): all checks passed, 38 files already formatted |
-| Unit tests | `pytest` (`pytest.ini` sets `pythonpath=src`; the tests compile the protos into a temp dir, so no generated stubs are needed) | run: 220 passed, 6 skipped (the Kafka integration tests) |
-| Kafka integration tests | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` (starts and removes its own `apache/kafka:4.3.2` container on 127.0.0.1:19093) | not run today (earlier results are in Verification status) |
-| Proto stubs | the `grpc_tools.protoc` command and the two `sed` lines in Running locally (what the Dockerfile does) | not run for this table (the test suite compiles them itself) |
+| Format and lint | `ruff format --check . && ruff check .` (the shared pipeline installs ruff with the version it pins) | run (ruff 0.17.0, the pinned CI version, from a separate venv): all checks passed, 38 files already formatted |
+| Unit tests | `pytest` (`pytest.ini` sets `pythonpath=src`; the tests compile the protos into a temp dir, so no generated stubs are needed). `pytest --cov=src` prints coverage (pytest-cov is a dev dependency, report only) | run: 236 passed, 6 skipped (the Kafka integration tests), coverage 81% (`consumer.py` 92%, `mailbox_store.py` 98%, `server.py` 50%, `telemetry.py` 60%); `tests/test_lifecycle.py` 5 more times in a row: 43 passed each time |
+| Kafka integration tests | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` (starts and removes its own `apache/kafka:4.3.2` container on 127.0.0.1:19093) | run: 6 passed in 26 s (late broker, event to mail through the real servicer, duplicate, restart resumes at the committed offset, new group reads from the earliest offset, malformed and unsupported records skipped). The tests keep two fixed waits that assert "nothing happens" (8 s with no broker, 3 s after the resumed consumer); they can only pass too early, never fail on timing |
+| Proto stubs | the `grpc_tools.protoc` command and the two `sed` lines in Running locally (what the Dockerfile does) | run by the image build (and by the test suite in a temp dir) |
 | Security scan | `bandit -r src/ -c pyproject.toml` | run (bandit 1.9.4 from a separate venv): exit 0, no issues |
-| Dependency audit | `pip-audit -r requirements.txt` | run: no known vulnerabilities found |
-| Image | `docker build -t platform-demo/email-service:local .` | not run today |
-| Image scan | `trivy image --severity CRITICAL,HIGH --exit-code 1 platform-demo/email-service:local` | not run today |
-| Secret scan | `pre-commit run --all-files` (`.pre-commit-config.yaml`, gitleaks) or `gitleaks git --redact` | run with the gitleaks binary of the pre-commit cache (`gitleaks git --redact`, full history, 67 commits): no leaks found |
-| Workflow lint | `actionlint` | run (actionlint 1.7.12), no findings |
-| Docs | `mkdocs build --strict` (mkdocs 1.6.1 + mkdocs-techdocs-core 1.7.1, Python 3.12 venv) and the link check `python3 -I tools/check-md-links.py .` from `platform-demo-workflows` (relative links in `README.md` and `docs/`) | run, both passed |
+| Dependency audit | `pip-audit -r requirements.txt` | run (pip-audit 2.10.1): no known vulnerabilities found |
+| Image | `docker build --platform linux/amd64 -t platform-demo/email-service:local .` | run: built, 188 MB, user `10001:10001`, exec-form HEALTHCHECK healthy; `grpcurl list` shows `EmailService`, `MailboxService`, `Health` and reflection; `docker stop` with the OTLP and Pyroscope addresses pointed at an address that never answers: 2.0 s, exit 0 |
+| Image scan | `trivy image --severity CRITICAL,HIGH --exit-code 1 platform-demo/email-service:local` | run (Trivy 0.76.1): exit 0, no CRITICAL or HIGH findings |
+| Secret scan | `pre-commit run --all-files` (`.pre-commit-config.yaml`, gitleaks) or `gitleaks git --redact` | run with the gitleaks binary of the pre-commit cache (`gitleaks git --redact`, full history): no leaks found |
+| Workflow lint | `actionlint` | not run in this bundle (only the two `uses:` pins of the callers changed; run on 2026-11-21 for the earlier version: no findings) |
+| Docs | `mkdocs build --strict` (mkdocs 1.6.1 + mkdocs-techdocs-core 1.7.1, Python 3.12 venv) and the link check `python3 -I tools/check-md-links.py .` from `platform-demo-workflows` (relative links in `README.md` and `docs/`) | run, both passed (15 relative links, 0 broken) |
+| Whole shop | `local/up.sh`, `local/smoke.sh` (the local compose stack of the workspace, not part of this repository) | run with this image and Kafka on: `SMOKE PASSED` three times in a row (87 steps each), including "confirmation mail arrives in /emails", "mail opens in a sandboxed iframe" and "another visitor cannot open the mail"; the mail log lines show the consumer reading `orders.placed` partitions 0 to 2; no `error` line in the service log |
 
 ## Project structure
 
@@ -283,7 +287,7 @@ Requirements: Python 3.12 (what the image runs) or 3.13 (`.python-version`), [uv
 └── docs/                # TechDocs pages (mkdocs.yml in the root), docs/adr/ = decisions
 ```
 
-## Verification status (what was run, what was not)
+## Verification status (what was run, what was not; final bundle 2026-11-22)
 
 Run on this branch (2026-10-31, Python 3.12.3 venv with the pinned `requirements.txt`; the 3.13 venv was only used for the lifecycle tests, see below):
 
@@ -294,11 +298,12 @@ Run on this branch (2026-10-31, Python 3.12.3 venv with the pinned `requirements
 | Rollout prep 2026-11-14, merged head (origin/main merged in): `uv venv --python 3.12` + pinned requirements, stubs generated, `pytest`, `ruff check .`, `ruff format --check .`, `docker build` (image runs as `10001:10001`, then removed) | 200 passed, 6 skipped (Kafka integration tests, not run); ruff clean; build ok. With Python 3.13 (what `.python-version` and the CI gate use) 197-199 passed, 1-3 lifecycle tests failed on the loaded host (subprocess start-up/shutdown timing, load average ~19) and passed when re-run alone |
 | `pytest` (no generated stubs in `src/generated`, as in CI) | 146 passed, 6 skipped (the Kafka integration tests); the pre-existing tests are unchanged except the two column-header asserts in `tests/test_template.py` ("Item No." is now "Item") and the stub compilation in the `app_dir` fixture of `tests/test_lifecycle.py`, which now includes `mailbox.proto` |
 | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` against a throwaway `apache/kafka:4.3.2` | 6 passed: broker started **after** the consumer (it waits, then catches up), event to one mail listed/fetched through the real gRPC servicer, the same event twice = one mail, restart resumes after the committed offset (the second consumer processed exactly the one new record), a new group reads from the earliest offset, malformed + `schema_version` 2 records skipped and the good one behind them stored |
+| Final bundle 2026-11-22 | see the Develop table above: pytest, ruff, bandit, pip-audit, the Kafka integration tests, image + Trivy, gitleaks, docs build and the whole shop (smoke 3 times, Kafka on) were run; the image was rebuilt after the template rewrite |
 | `docker build -t email-service:local .` and a container smoke test (run before the template rewrite of 2026-10-31 evening; the image was not rebuilt after it) on a private docker network with a throwaway Kafka and a named volume | image 184 MB; service started before the broker was up, recovered, consumed an event (1 mail), a duplicate was ignored; `ListOrderEmails` / `GetOrderEmail` via `grpcurl -proto` returned the mail (with bodies only in `GetOrderEmail`), wrong `order_id` = `NOT_FOUND`, old `SendOrderConfirmation` still `{}`, health `SERVING` also with the broker stopped; the mailbox survived a container restart and the restart did not re-read old offsets; `docker stop` exit code 0 (about 0.6 s with Kafka up, consumer stopped within 20 ms of `SIGTERM` with Kafka down); the service restarted while the broker was gone, and a broker created afterwards was picked up (second event stored, about 40 s after the produce) |
 
 Not run:
 
-- Kubernetes / Helm / Argo / Kyverno (the chart has no `/data` volume and runs 2 replicas, see Kubernetes), AWS, the CI pipeline, Trivy.
+- Kubernetes / Helm / Argo / Kyverno (the chart has no `/data` volume and runs 2 replicas, see Kubernetes), AWS, the CI pipeline.
 - Telemetry on together with the consumer (OTLP/Pyroscope with Kafka on): only the telemetry-off container and the existing telemetry tests were exercised.
 - More than one replica / partition rebalancing between two live consumers, a `kill -9` of the process between store and commit (the idempotency is covered by the replay tests, the crash itself was not), a database failure in the container (covered with a fake client and a broken store in the unit tests only), and the real frontend and checkout against this service.
 - A topic that is created later than the consumer was only seen in the integration run (the consumer logs/waits), not measured for latency.

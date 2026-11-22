@@ -4,19 +4,20 @@
 
 Requirements: Python 3.12 (what the image runs) or 3.13 (`.python-version`), [uv](https://github.com/astral-sh/uv) for the virtualenv, Docker for the image and the Kafka integration test, Python 3.12 for the docs check. The commands below are the ones the shared pipeline (`platform-demo-workflows`, `service-ci-python`) runs, so a failure can be reproduced without pushing. Setup: `uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt` (the venv for the table below was made outside the repository). `Running locally` above has the run commands.
 
-| Step | Command | Result on 2026-11-21 |
+| Step | Command | Result on 2026-11-22 |
 |---|---|---|
-| Format and lint | `ruff format --check . && ruff check .` (the shared pipeline installs ruff with the version it pins) | run (ruff 0.17.2 from a separate venv): all checks passed, 38 files already formatted |
-| Unit tests | `pytest` (`pytest.ini` sets `pythonpath=src`; the tests compile the protos into a temp dir, so no generated stubs are needed) | run: 220 passed, 6 skipped (the Kafka integration tests) |
-| Kafka integration tests | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` (starts and removes its own `apache/kafka:4.3.2` container on 127.0.0.1:19093) | not run today (earlier results are in Verification status) |
-| Proto stubs | the `grpc_tools.protoc` command and the two `sed` lines in Running locally (what the Dockerfile does) | not run for this table (the test suite compiles them itself) |
+| Format and lint | `ruff format --check . && ruff check .` (the shared pipeline installs ruff with the version it pins) | run (ruff 0.17.0, the pinned CI version, from a separate venv): all checks passed, 38 files already formatted |
+| Unit tests | `pytest` (`pytest.ini` sets `pythonpath=src`; the tests compile the protos into a temp dir, so no generated stubs are needed). `pytest --cov=src` prints coverage (pytest-cov is a dev dependency, report only) | run: 236 passed, 6 skipped (the Kafka integration tests), coverage 81% (`consumer.py` 92%, `mailbox_store.py` 98%, `server.py` 50%, `telemetry.py` 60%); `tests/test_lifecycle.py` 5 more times in a row: 43 passed each time |
+| Kafka integration tests | `KAFKA_INTEGRATION=1 pytest tests/test_kafka_integration.py` (starts and removes its own `apache/kafka:4.3.2` container on 127.0.0.1:19093) | run: 6 passed in 26 s (late broker, event to mail through the real servicer, duplicate, restart resumes at the committed offset, new group reads from the earliest offset, malformed and unsupported records skipped). The tests keep two fixed waits that assert "nothing happens" (8 s with no broker, 3 s after the resumed consumer); they can only pass too early, never fail on timing |
+| Proto stubs | the `grpc_tools.protoc` command and the two `sed` lines in Running locally (what the Dockerfile does) | run by the image build (and by the test suite in a temp dir) |
 | Security scan | `bandit -r src/ -c pyproject.toml` | run (bandit 1.9.4 from a separate venv): exit 0, no issues |
-| Dependency audit | `pip-audit -r requirements.txt` | run: no known vulnerabilities found |
-| Image | `docker build -t platform-demo/email-service:local .` | not run today |
-| Image scan | `trivy image --severity CRITICAL,HIGH --exit-code 1 platform-demo/email-service:local` | not run today |
-| Secret scan | `pre-commit run --all-files` (`.pre-commit-config.yaml`, gitleaks) or `gitleaks git --redact` | run with the gitleaks binary of the pre-commit cache (`gitleaks git --redact`, full history, 67 commits): no leaks found |
-| Workflow lint | `actionlint` | run (actionlint 1.7.12), no findings |
-| Docs | `mkdocs build --strict` (mkdocs 1.6.1 + mkdocs-techdocs-core 1.7.1, Python 3.12 venv) and the link check `python3 -I tools/check-md-links.py .` from `platform-demo-workflows` (relative links in `README.md` and `docs/`) | run, both passed |
+| Dependency audit | `pip-audit -r requirements.txt` | run (pip-audit 2.10.1): no known vulnerabilities found |
+| Image | `docker build --platform linux/amd64 -t platform-demo/email-service:local .` | run: built, 188 MB, user `10001:10001`, exec-form HEALTHCHECK healthy; `grpcurl list` shows `EmailService`, `MailboxService`, `Health` and reflection; `docker stop` with the OTLP and Pyroscope addresses pointed at an address that never answers: 2.0 s, exit 0 |
+| Image scan | `trivy image --severity CRITICAL,HIGH --exit-code 1 platform-demo/email-service:local` | run (Trivy 0.76.1): exit 0, no CRITICAL or HIGH findings |
+| Secret scan | `pre-commit run --all-files` (`.pre-commit-config.yaml`, gitleaks) or `gitleaks git --redact` | run with the gitleaks binary of the pre-commit cache (`gitleaks git --redact`, full history): no leaks found |
+| Workflow lint | `actionlint` | not run in this bundle (only the two `uses:` pins of the callers changed; run on 2026-11-21 for the earlier version: no findings) |
+| Docs | `mkdocs build --strict` (mkdocs 1.6.1 + mkdocs-techdocs-core 1.7.1, Python 3.12 venv) and the link check `python3 -I tools/check-md-links.py .` from `platform-demo-workflows` (relative links in `README.md` and `docs/`) | run, both passed (15 relative links, 0 broken) |
+| Whole shop | `local/up.sh`, `local/smoke.sh` (the local compose stack of the workspace, not part of this repository) | run with this image and Kafka on: `SMOKE PASSED` three times in a row (87 steps each), including "confirmation mail arrives in /emails", "mail opens in a sandboxed iframe" and "another visitor cannot open the mail"; the mail log lines show the consumer reading `orders.placed` partitions 0 to 2; no `error` line in the service log |
 
 ## Running locally
 
