@@ -190,7 +190,8 @@ class OrdersPlacedConsumer:
 
     def register_metrics(self, meter) -> None:
         """kafka_consumer_lag{group,topic,partition} (records the group still has to read) and
-        email_events_processed_total{outcome} (stored, duplicate, skipped). Call once, before start()."""
+        email_events_processed_total{outcome} (stored, duplicate, skipped; all three start at 0).
+        Call once, before start()."""
         from opentelemetry.metrics import Observation
 
         def lag(_options):
@@ -203,6 +204,8 @@ class OrdersPlacedConsumer:
         self._outcomes = meter.create_counter(
             "email_events_processed_total", description="orders.placed records handled, by outcome"
         )
+        for outcome in (STORED, DUPLICATE, SKIPPED):  # the series exist from the start, at 0
+            self._outcomes.add(0, {"outcome": outcome})
 
     def lag_snapshot(self) -> dict[tuple[str, int], int]:
         return dict(self._lag)

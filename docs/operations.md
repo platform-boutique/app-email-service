@@ -11,7 +11,7 @@ grpcurl -plaintext localhost:8080 list
 
 ## Shutdown
 
-`SIGTERM` and `SIGINT` are handled, also as PID 1. The Kafka consumer (if on) finishes and commits its current message and closes (bounded at 2 s, in parallel with the drain; a stuck consumer thread is abandoned and its message is redelivered). The server stops accepting RPCs and gives in-flight ones up to 2 s (`server.stop(2)`). Telemetry is flushed, bounded at 2 s, also when the collector is unreachable, and the process exits 0. The worst case is 4 s, which fits a termination grace period of 5 s. A `docker stop` of the idle container was measured by the author on an earlier build (0.36 s, exit 0); it was not repeated for this page.
+`SIGTERM` and `SIGINT` are handled, also as PID 1. The Kafka consumer (if on) finishes and commits its current message and closes (bounded at 2 s, in parallel with the drain; a stuck consumer thread is abandoned and its message is redelivered). The server stops accepting RPCs and gives in-flight ones up to 2 s (`server.stop(2)`). Telemetry is flushed, bounded at 2 s, also when the collector is unreachable, and the process exits 0. The worst case is 4 s, which fits a termination grace period of 5 s. `docker stop` of this image with the OTLP and Pyroscope addresses pointed at an address that never answers took 2.0 s and the exit code was 0 (2026-11-22, Kafka off). `telemetry.shutdown()` waits for its flush for exactly its deadline: measured 2.00-2.01 s against an unreachable collector; an earlier note of 5-6 s did not reproduce.
 
 ## Scaling and replicas
 
